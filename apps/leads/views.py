@@ -1,5 +1,6 @@
 from django.contrib import messages
-from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
+from django.contrib.auth.mixins import LoginRequiredMixin
+from apps.permissions_engine.mixins import CRMPermissionRequiredMixin
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -35,12 +36,12 @@ SOURCE_RULES = {
 }
 
 
-class LeadListView(LoginRequiredMixin, PermissionRequiredMixin, ListView):
+class LeadListView(LoginRequiredMixin, CRMPermissionRequiredMixin, ListView):
     model = Lead
     template_name = 'leads/lead_list.html'
     context_object_name = 'leads'
     paginate_by = 30
-    permission_required = 'leads.view_own'
+    permission_required = 'leads.view_lead'
 
     def get_queryset(self):
         user = self.request.user
@@ -61,16 +62,25 @@ class LeadListView(LoginRequiredMixin, PermissionRequiredMixin, ListView):
         return ctx
 
 
-class LeadDetailView(LoginRequiredMixin, DetailView):
+class LeadDetailView(LoginRequiredMixin, CRMPermissionRequiredMixin, DetailView):
     model = Lead
     template_name = 'leads/lead_detail.html'
     context_object_name = 'lead'
+    permission_required = 'leads.view_lead'
+
+    def get_queryset(self):
+        user = self.request.user
+        company = user.company if not user.is_superuser else None
+        qs = Lead.objects.all()
+        if company:
+            qs = qs.filter(company=company)
+        return qs
 
     def post(self, request, *args, **kwargs):
         lead = self.get_object()
         action = request.POST.get('action')
         if action == 'stage':
-            stage = get_object_or_404(LeadStage, pk=request.POST.get('stage'))
+            stage = get_object_or_404(LeadStage, pk=request.POST.get('stage'), company=lead.company)
             LeadService.change_stage(lead=lead, new_stage=stage, actor=request.user, reason=request.POST.get('reason',''))
             msg = 'Lead stage updated.'
         elif action == 'activity':
@@ -95,8 +105,8 @@ class LeadDetailView(LoginRequiredMixin, DetailView):
         return ctx
 
 
-class LeadCreateView(LoginRequiredMixin, PermissionRequiredMixin, View):
-    permission_required = 'leads.create'
+class LeadCreateView(LoginRequiredMixin, CRMPermissionRequiredMixin, View):
+    permission_required = 'leads.create_lead'
     template_name = 'leads/lead_form.html'
 
     def get(self, request):
@@ -183,11 +193,19 @@ class LeadCreateView(LoginRequiredMixin, PermissionRequiredMixin, View):
         }
 
 
-class LeadUpdateView(LoginRequiredMixin, PermissionRequiredMixin, UpdateView):
+class LeadUpdateView(LoginRequiredMixin, CRMPermissionRequiredMixin, UpdateView):
     model = Lead
     form_class = LeadForm
     template_name = 'leads/lead_edit.html'
-    permission_required = 'leads.update'
+    permission_required = 'leads.update_lead'
+
+    def get_queryset(self):
+        user = self.request.user
+        company = user.company if not user.is_superuser else None
+        qs = Lead.objects.all()
+        if company:
+            qs = qs.filter(company=company)
+        return qs
 
 
 def ajax_source_rules(request):

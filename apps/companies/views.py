@@ -1,4 +1,5 @@
-from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
+from django.contrib.auth.mixins import LoginRequiredMixin
+from apps.permissions_engine.mixins import CRMPermissionRequiredMixin
 from django.views.generic import ListView, CreateView, UpdateView, TemplateView
 from django.urls import reverse_lazy
 from django.shortcuts import redirect
@@ -9,26 +10,38 @@ from .models import Company, Branch, Language
 from .forms import CompanyForm, BranchForm, LanguageForm
 
 
-class CompanyListView(LoginRequiredMixin, PermissionRequiredMixin, ListView):
+class CompanyListView(LoginRequiredMixin, CRMPermissionRequiredMixin, ListView):
     model = Company
     template_name = 'companies/company_list.html'
-    permission_required = 'companies.view_company'
+    permission_required = 'companies.manage_company_policy'
+
+    def get_queryset(self):
+        user = self.request.user
+        if not user.is_superuser:
+            return Company.objects.filter(pk=user.company_id)
+        return Company.objects.all()
 
 
-class CompanyCreateView(LoginRequiredMixin, PermissionRequiredMixin, CreateView):
+class CompanyCreateView(LoginRequiredMixin, CRMPermissionRequiredMixin, CreateView):
     model = Company
     form_class = CompanyForm
     template_name = 'companies/company_form.html'
     success_url = reverse_lazy('companies:list')
-    permission_required = 'companies.manage_company'
+    permission_required = 'companies.manage_company_policy'
 
 
-class CompanyUpdateView(LoginRequiredMixin, PermissionRequiredMixin, UpdateView):
+class CompanyUpdateView(LoginRequiredMixin, CRMPermissionRequiredMixin, UpdateView):
     model = Company
     form_class = CompanyForm
     template_name = 'companies/company_form.html'
     success_url = reverse_lazy('companies:list')
-    permission_required = 'companies.manage_company'
+    permission_required = 'companies.manage_company_policy'
+
+    def get_queryset(self):
+        user = self.request.user
+        if not user.is_superuser:
+            return Company.objects.filter(pk=user.company_id)
+        return Company.objects.all()
 
 
 class BranchListView(LoginRequiredMixin, ListView):

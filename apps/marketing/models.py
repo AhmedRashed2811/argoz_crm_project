@@ -36,6 +36,10 @@ class Campaign(UUIDBaseModel):
             ('manage_campaign_types', 'Can manage campaign types'),
             ('manage_attribution', 'Can manage campaign attribution'),
         ]
+        constraints = [
+            models.CheckConstraint(check=models.Q(end_date__gte=models.F('start_date')), name='campaign_end_date_gte_start_date'),
+            models.CheckConstraint(check=models.Q(total_budget__gte=0), name='campaign_total_budget_non_negative'),
+        ]
 
     def __str__(self):
         return self.name
@@ -81,8 +85,14 @@ class CampaignEvent(UUIDBaseModel):
     event_date = models.DateField()
     budget = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     target_attendees = models.PositiveIntegerField(null=True, blank=True)
+    actual_attendees = models.PositiveIntegerField(default=0)
     description = models.TextField(blank=True)
     logo = models.ImageField(upload_to='event_logos/', blank=True, null=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=models.Q(budget__gte=0), name='campaign_event_budget_non_negative'),
+        ]
 
     def __str__(self):
         return self.event_name
@@ -217,3 +227,15 @@ class LeadCampaignAttribution(UUIDBaseModel):
 
     class Meta:
         indexes = [models.Index(fields=['campaign', 'campaign_type', 'platform'])]
+
+
+class EventAttendance(UUIDBaseModel):
+    company = models.ForeignKey('companies.Company', on_delete=models.CASCADE, related_name='event_attendances')
+    event = models.ForeignKey(CampaignEvent, on_delete=models.CASCADE, related_name='attendances')
+    lead = models.ForeignKey('leads.Lead', on_delete=models.CASCADE, null=True, blank=True, related_name='event_attendances')
+    registered_at = models.DateTimeField(default=timezone.now)
+    attended = models.BooleanField(default=False)
+    platform = models.CharField(max_length=100, blank=True)
+
+    class Meta:
+        ordering = ['-registered_at']

@@ -6,3 +6,6 @@ class MarketingConfig(AppConfig):
     name = 'apps.marketing'
     label = 'marketing'
     verbose_name = 'Marketing'
+
+    def ready(self):
+        import apps.marketing.signals

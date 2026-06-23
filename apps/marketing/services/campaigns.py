@@ -81,6 +81,8 @@ class CampaignValidationService:
                 cls._assert_non_negative(line.budget, f'Social platform {line.platform} budget')
         for cost in campaign.other_costs.all():
             cls._assert_non_negative(cost.value, 'Other cost')
+            if not cost.reason or not cost.reason.strip():
+                raise ValueError("Other cost reason is required.")
         return True
 
     @classmethod

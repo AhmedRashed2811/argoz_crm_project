@@ -1,5 +1,7 @@
 from apps.sla.models import LeadSLAInstance
 import re
+from datetime import timedelta
+from django.utils import timezone
 from django.db import transaction
 from apps.leads.models import Lead, LeadAssignment, LeadStageHistory, LeadReactivation
 from apps.marketing.models import LeadCampaignAttribution
@@ -8,6 +10,12 @@ from apps.sla.services.sla import SLAService
 from apps.audit.services.audit import AuditService
 from apps.notifications.services.notifications import NotificationService
 from apps.core.services.policies import PolicyResolver
+
+def update_salesman_cache(salesman):
+    if salesman and hasattr(salesman, 'sales_profile'):
+        profile = salesman.sales_profile
+        profile.active_lead_count_cache = salesman.current_leads.filter(status='active').count()
+        profile.save(update_fields=['active_lead_count_cache', 'updated_at'])
 
 
 def normalize_phone(country_code, number):
@@ -313,33 +321,138 @@ class LeadService:
 
     @staticmethod
     def handle_call_me_again(*, lead, actor=None):
-        """Handle 'call me again' request within SLA — bypasses Round Robin."""
-        # Close existing SLA (lead is being handled)
+        """Handle 'call me again' request within SLA — creates manual distribution request."""
+        # 1. Close existing SLA if active
         active_sla = LeadSLAInstance.objects.filter(lead=lead, status='active').first()
         if active_sla:
-            SLAService.close_sla(active_sla, reason='call_me_again')
-        # Re-assign to current salesman manually (bypass auto-distribution)
-        if lead.current_salesman:
-            result = DistributionService.manual_assign(
-                lead=lead, actor=actor or lead.current_salesman,
-                salesman=lead.current_salesman, team=lead.current_team,
-            )
-            # Start a new SLA for the fresh interaction
-            assignment = lead.assignments.filter(is_current=True).first()
-            SLAService.start_for_lead(lead, assignment=assignment)
-            AuditService.log(company=lead.company, actor=actor, action='lead.call_me_again', obj=lead)
-            return result
-        return None
+            SLAService.close_sla(active_sla, reason='call_me_again_escalation')
+
+        # 2. Create the ManualDistributionRequest
+        from apps.distribution.models import ManualDistributionRequest
+        from apps.accounts.models import User
+        from apps.permissions_engine.services.engine import PermissionEngine
+
+        req = ManualDistributionRequest.objects.create(
+            company=lead.company,
+            lead=lead,
+            original_salesman=lead.current_salesman,
+            original_team=lead.current_team,
+            status='pending',
+            reason='Lead re-engaged / call me again requested while active within SLA.'
+        )
+
+        # 3. Log Audit
+        AuditService.log(
+            company=lead.company,
+            actor=actor,
+            action='lead.call_me_again_escalation',
+            obj=lead,
+            metadata={'request_id': str(req.id)}
+        )
+
+        # 4. Notify authorized users
+        auth_users = User.objects.filter(company=lead.company, is_active=True)
+        for u in auth_users:
+            if PermissionEngine.has_perm(u, 'distribution.run_manual_distribution') or PermissionEngine.has_perm(u, 'leads.assign_lead_manual'):
+                NotificationService.notify(
+                    company=lead.company,
+                    recipient=u,
+                    type_code='generic',
+                    title='Lead Call Me Again Escalation',
+                    message=f'Lead {lead.full_name} has requested "Call Me Again" and is escalated for manual distribution.',
+                    related_object=lead,
+                )
+        return req
 
     @staticmethod
-    def change_stage(*, lead, new_stage, actor=None, reason=''):
+    def change_stage(*, lead, new_stage, actor=None, reason='', **kwargs):
         old_stage = lead.current_stage
+        
+        # 1. Validations
+        if new_stage.code in ('follow_up', 'followup'):
+            due_at = kwargs.get('due_at') or lead.metadata.get('followup_due_at')
+            if not due_at and not lead.followups.filter(status='pending').exists():
+                raise ValueError("Follow-up stage requires a scheduled due date and time.")
+        
+        if new_stage.code == 'meeting':
+            scheduled_at = kwargs.get('scheduled_at') or lead.metadata.get('meeting_scheduled_at')
+            if not scheduled_at and not lead.meetings.filter(status='scheduled').exists():
+                raise ValueError("Meeting stage requires a scheduled meeting date and time.")
+                
+        if new_stage.code == 'frozen':
+            freeze_end = kwargs.get('freeze_end') or lead.metadata.get('freeze_end')
+            if not freeze_end:
+                raise ValueError("Frozen stage requires a freeze end date.")
+
+        # 2. Update stage and status
         lead.current_stage = new_stage
         if new_stage.is_terminal:
             lead.status = Lead.STATUS_INACTIVE
         lead.save(update_fields=['current_stage', 'status', 'updated_at'])
         LeadStageHistory.objects.create(lead=lead, from_stage=old_stage, to_stage=new_stage, changed_by=actor, reason=reason)
         AuditService.log(company=lead.company, actor=actor, action='lead.stage_changed', obj=lead, before={'stage': getattr(old_stage, 'code', None)}, after={'stage': new_stage.code})
+
+        # 3. Create follow-up / meeting / frozen records if passed
+        if new_stage.code in ('follow_up', 'followup') and kwargs.get('due_at'):
+            from apps.leads.models import LeadFollowUp
+            lead.followups.filter(status='pending').update(status='cancelled')
+            LeadFollowUp.objects.create(
+                lead=lead,
+                assigned_to=lead.current_salesman or actor,
+                due_at=kwargs.get('due_at'),
+                status='pending',
+                notes=reason
+            )
+            
+        if new_stage.code == 'meeting' and kwargs.get('scheduled_at'):
+            from apps.leads.models import Meeting
+            lead.meetings.filter(status='scheduled').update(status='cancelled')
+            Meeting.objects.create(
+                lead=lead,
+                assigned_to=lead.current_salesman or actor,
+                scheduled_at=kwargs.get('scheduled_at'),
+                location=kwargs.get('location', ''),
+                meeting_type=kwargs.get('meeting_type', 'office'),
+                status='scheduled',
+                notes=reason
+            )
+            
+        if new_stage.code == 'frozen' and kwargs.get('freeze_end'):
+            lead.metadata['freeze_end'] = str(kwargs.get('freeze_end'))
+            lead.save(update_fields=['metadata'])
+            if lead.current_salesman:
+                NotificationService.create_reminder(
+                    company=lead.company,
+                    recipient=lead.current_salesman,
+                    title=f"Frozen lead reactivation: {lead.full_name}",
+                    message=f"Lead {lead.full_name} freeze period has ended.",
+                    due_at=kwargs.get('freeze_end'),
+                    reminder_type='frozen_reactivation',
+                    lead=lead
+                )
+
+        # 4. Handle Not Reached automatic reminder mode
+        if new_stage.code in ('not_reached', 'no_answer'):
+            mode = PolicyResolver.get_code(lead.company, 'reminder_mode_not_reached', 'automatic')
+            if mode == 'automatic' and lead.current_salesman:
+                due_at = timezone.now() + timedelta(hours=2)
+                from apps.leads.models import LeadFollowUp
+                LeadFollowUp.objects.create(
+                    lead=lead,
+                    assigned_to=lead.current_salesman,
+                    due_at=due_at,
+                    status='pending',
+                    notes="Automatic follow-up scheduled for Not Reached stage."
+                )
+                NotificationService.create_reminder(
+                    company=lead.company,
+                    recipient=lead.current_salesman,
+                    title=f"Call again: {lead.full_name}",
+                    message=f"Lead {lead.full_name} was not reached. Please call again.",
+                    due_at=due_at,
+                    reminder_type='followup_reminder',
+                    lead=lead
+                )
 
         # Close active SLA when stage changes (salesman took action)
         from apps.sla.models import LeadSLAInstance
@@ -352,6 +465,10 @@ class LeadService:
             assignment = lead.assignments.filter(is_current=True).first()
             SLAService.start_for_lead(lead, assignment=assignment)
 
+        # Update cache count for the salesman
+        if lead.current_salesman:
+            update_salesman_cache(lead.current_salesman)
+
         return lead
 
     @staticmethod
@@ -361,6 +478,11 @@ class LeadService:
         lead.save(update_fields=['status', 'updated_at'])
         LeadReactivation.objects.create(lead=lead, reactivated_by=actor, reason=reason, previous_status=previous)
         AuditService.log(company=lead.company, actor=actor, action='lead.reactivated', obj=lead, before={'status': previous}, after={'status': lead.status})
+        
+        # Update cache count for the salesman
+        if lead.current_salesman:
+            update_salesman_cache(lead.current_salesman)
+            
         # Redistribute reactivated lead per policy
         LeadService.assign_lead(lead=lead, actor=actor)
         NotificationService.notify(

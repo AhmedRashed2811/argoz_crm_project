@@ -5,6 +5,10 @@ from apps.distribution.models import RotationPointer
 def get_eligible_sales_profiles(company, team=None, language=None):
     """Retrieves available sales profiles scoped to a company and optionally team/language."""
     qs = SalesProfile.objects.select_related('user').filter(company=company, is_available=True, user__is_active=True)
+    from django.db.models import F
+    qs = qs.filter(
+        Q(max_active_leads__isnull=True) | Q(active_lead_count_cache__lt=F('max_active_leads'))
+    )
     if team:
         qs = qs.filter(user__team_memberships__team=team, user__team_memberships__is_active=True)
     if language:

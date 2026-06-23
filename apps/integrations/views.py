@@ -3,11 +3,14 @@ from django.http import JsonResponse, HttpResponseForbidden
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from django.views import View
-from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
+from django.contrib.auth.mixins import LoginRequiredMixin
+from apps.permissions_engine.mixins import CRMPermissionRequiredMixin
 from django.views.generic import ListView, TemplateView
 from django.shortcuts import get_object_or_404
+from django.http import Http404
 from .models import CompanyIntegration, IncomingWebhookPayload, TenantWebhookEndpoint
 from .services.webhooks import IncomingWebhookService
+from .selectors import get_incoming_payload_by_id, get_webhook_endpoint_by_id
 from apps.audit.services.audit import AuditService
 
 
@@ -31,55 +34,59 @@ class WebhookLogListView(LoginRequiredMixin, ListView):
 @method_decorator(csrf_exempt, name='dispatch')
 class TenantWebhookView(View):
     def post(self, request, endpoint_uuid):
+        import uuid
+        try:
+            uuid.UUID(str(endpoint_uuid))
+        except ValueError:
+            return JsonResponse({'status': 'failed', 'error': 'Invalid endpoint UUID format'}, status=400)
+
         token = request.headers.get('X-CRM-Webhook-Token') or request.GET.get('token') or ''
+        if not token:
+            return HttpResponseForbidden('Missing token')
+
         try:
             raw_payload = json.loads(request.body.decode('utf-8') or '{}')
             payload = IncomingWebhookService.receive(endpoint_uuid=endpoint_uuid, raw_payload=raw_payload, token=token)
             return JsonResponse({'status': payload.processing_status, 'payload_id': str(payload.id)})
-        except PermissionError:
-            return HttpResponseForbidden('Invalid token')
+        except PermissionError as exc:
+            return HttpResponseForbidden(str(exc))
+        except TenantWebhookEndpoint.DoesNotExist:
+            return JsonResponse({'status': 'failed', 'error': 'Endpoint not found or inactive'}, status=404)
         except Exception as exc:
             return JsonResponse({'status': 'failed', 'error': str(exc)}, status=400)
 
 
-class WebhookReprocessView(LoginRequiredMixin, PermissionRequiredMixin, View):
+class WebhookReprocessView(LoginRequiredMixin, CRMPermissionRequiredMixin, View):
     """Reprocess a failed webhook payload."""
-    permission_required = 'integrations.reprocess_payload'
+    permission_required = 'integrations.manage_meta_connection'
 
     def post(self, request, pk):
-        payload = get_object_or_404(IncomingWebhookPayload, pk=pk)
+        company = request.user.company if not request.user.is_superuser else None
+        payload = get_incoming_payload_by_id(company, pk)
+        if not payload:
+            raise Http404("Payload not found or access denied.")
         if payload.processing_status != 'failed':
             return JsonResponse({'error': 'Only failed payloads can be reprocessed.'}, status=400)
         try:
-            payload.processing_status = 'pending'
-            payload.error_message = ''
-            payload.save(update_fields=['processing_status', 'error_message', 'updated_at'])
-            lead = IncomingWebhookService.process_payload(payload)
-            payload.processed_lead = lead
-            payload.processing_status = 'processed'
-            payload.save(update_fields=['processed_lead', 'processing_status', 'updated_at'])
-            AuditService.log(
-                company=payload.endpoint.company, actor=request.user,
-                action='webhook.payload_reprocessed', obj=lead,
-                metadata={'payload_id': str(payload.id)},
-            )
-            return JsonResponse({'status': 'processed', 'lead_id': str(lead.pk) if lead else None})
+            payload = IncomingWebhookService.reprocess_payload(payload)
+            lead = payload.processed_lead
+            return JsonResponse({'status': 'reprocessed', 'lead_id': str(lead.pk) if lead else None})
         except Exception as exc:
-            payload.processing_status = 'failed'
-            payload.error_message = str(exc)
-            payload.save(update_fields=['processing_status', 'error_message', 'updated_at'])
             return JsonResponse({'status': 'failed', 'error': str(exc)}, status=400)
 
 
-class WebhookSecretRotateView(LoginRequiredMixin, PermissionRequiredMixin, View):
+class WebhookSecretRotateView(LoginRequiredMixin, CRMPermissionRequiredMixin, View):
     """Rotate the secret token for a webhook endpoint."""
-    permission_required = 'integrations.manage_field_mapping'
+    permission_required = 'integrations.manage_meta_connection'
 
     def post(self, request, pk):
         import secrets
         from .services.webhooks import hash_token
 
-        endpoint = get_object_or_404(TenantWebhookEndpoint, pk=pk)
+        company = request.user.company if not request.user.is_superuser else None
+        endpoint = get_webhook_endpoint_by_id(company, pk)
+        if not endpoint:
+            raise Http404("Endpoint not found or access denied.")
         new_token = secrets.token_urlsafe(32)
         endpoint.secret_token_hash = hash_token(new_token)
         endpoint.save(update_fields=['secret_token_hash', 'updated_at'])

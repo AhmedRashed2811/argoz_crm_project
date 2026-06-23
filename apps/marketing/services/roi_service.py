@@ -1,6 +1,6 @@
 from decimal import Decimal
 from django.db import transaction
-from apps.marketing.models import Campaign, CampaignKPIResult, LeadCampaignAttribution
+from apps.marketing.models import Campaign, CampaignKPIResult, LeadCampaignAttribution, EventAttendance
 
 
 class ROIService:
@@ -32,7 +32,14 @@ class ROIService:
 
     @staticmethod
     def calculate_event_roi(campaign: Campaign):
-        total_attendees = sum(event.target_attendees or 0 for event in campaign.events.all())
+        total_attendees = sum(event.actual_attendees or 0 for event in campaign.events.all())
+        # Also count the actual EventAttendance records if they exist to be safe and accurate
+        attendance_count = 0
+        for event in campaign.events.all():
+            attendance_count += EventAttendance.objects.filter(company=campaign.company, event=event, attended=True).count()
+        if attendance_count > 0:
+            total_attendees = attendance_count
+
         cpa = Decimal('0.00')
         if total_attendees > 0:
             CampaignKPIResult.objects.update_or_create(
@@ -78,6 +85,27 @@ class ROIService:
                     )
                 else:
                     CampaignKPIResult.objects.filter(campaign=campaign, metric_code=f'platform_{platform}_cpl').delete()
+                
+                # Platform-level Event ROI (attributing platform budget vs event attendees referred by this platform)
+                platform_attendees = EventAttendance.objects.filter(
+                    company=campaign.company, event__campaign=campaign, platform=platform, attended=True
+                ).count()
+                platform_cpa = Decimal('0.00')
+                if platform_attendees > 0:
+                    platform_cpa = (Decimal(platform_budget) / Decimal(platform_attendees)).quantize(Decimal('0.01'))
+                    CampaignKPIResult.objects.update_or_create(
+                        campaign=campaign,
+                        metric_code=f'platform_{platform}_cpa',
+                        defaults={'metric_value': platform_cpa},
+                    )
+                    CampaignKPIResult.objects.update_or_create(
+                        campaign=campaign,
+                        metric_code=f'platform_{platform}_attendees',
+                        defaults={'metric_value': Decimal(platform_attendees)},
+                    )
+                else:
+                    CampaignKPIResult.objects.filter(campaign=campaign, metric_code__in=[f'platform_{platform}_cpa', f'platform_{platform}_attendees']).delete()
+
                 achievement = None
                 if platform_line.target_value:
                     achievement = (Decimal(platform_leads) / Decimal(platform_line.target_value) * Decimal('100')).quantize(Decimal('0.01'))
@@ -88,15 +116,17 @@ class ROIService:
                     )
                 platform_metrics[platform] = {
                     'leads': platform_leads,
+                    'attendees': platform_attendees,
                     'budget': platform_budget,
                     'cpl': platform_cpl,
+                    'cpa': platform_cpa,
                     'target_value': platform_line.target_value,
                     'kpi_achievement_pct': achievement,
                 }
         for kpi in CampaignKPIResult.objects.filter(campaign=campaign, metric_code__startswith='platform_'):
-            if kpi.metric_code.endswith(('_leads', '_cpl', '_kpi_achievement_pct')):
+            if kpi.metric_code.endswith(('_leads', '_cpl', '_kpi_achievement_pct', '_cpa', '_attendees')):
                 platform_name = kpi.metric_code[len('platform_'):]
-                for suffix in ('_kpi_achievement_pct', '_leads', '_cpl'):
+                for suffix in ('_kpi_achievement_pct', '_leads', '_cpl', '_cpa', '_attendees'):
                     if platform_name.endswith(suffix):
                         platform_name = platform_name[:-len(suffix)]
                         break

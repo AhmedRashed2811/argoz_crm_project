@@ -1,3 +1,5 @@
+from django.db import transaction
+from django.utils import timezone
 from apps.core.services.policies import PolicyResolver
 from apps.distribution.registry import DistributionStrategyRegistry
 from apps.audit.services.audit import AuditService
@@ -38,3 +40,53 @@ class DistributionService:
     @classmethod
     def manual_assign(cls, *, lead, actor, team=None, salesman=None):
         return cls.assign(lead=lead, actor=actor, strategy_code='manual_assignment', scope_mode='manual', team=team, salesman=salesman)
+
+
+class ManualDistributionService:
+    @classmethod
+    @transaction.atomic
+    def assign_request(cls, request_obj, salesman, team=None, actor=None):
+        if request_obj.status != 'pending':
+            raise ValueError("This request is already processed.")
+
+        from apps.leads.services.leads import LeadService
+        # Assign the lead manually
+        LeadService.assign_lead(lead=request_obj.lead, actor=actor, strategy_code='manual_assignment', salesman=salesman, team=team)
+
+        request_obj.status = 'assigned'
+        request_obj.assigned_to = salesman
+        if team:
+            request_obj.original_team = team
+        request_obj.actioned_by = actor
+        request_obj.actioned_at = timezone.now()
+        request_obj.save()
+
+        AuditService.log(
+            company=request_obj.lead.company, actor=actor, action='lead.manual_request_assigned',
+            obj=request_obj.lead, metadata={'request_id': str(request_obj.id), 'salesman_id': str(salesman.id)}
+        )
+        return request_obj
+
+    @classmethod
+    @transaction.atomic
+    def ignore_request(cls, request_obj, actor=None, reason=''):
+        if request_obj.status != 'pending':
+            raise ValueError("This request is already processed.")
+
+        request_obj.status = 'ignored'
+        request_obj.actioned_by = actor
+        request_obj.actioned_at = timezone.now()
+        request_obj.reason = reason
+        request_obj.save()
+
+        # Start a new SLA for the original salesman as they were preserved
+        from apps.sla.services.sla import SLAService
+        lead = request_obj.lead
+        assignment = lead.assignments.filter(is_current=True).first()
+        SLAService.start_for_lead(lead, assignment=assignment)
+
+        AuditService.log(
+            company=lead.company, actor=actor, action='lead.manual_request_ignored',
+            obj=lead, metadata={'request_id': str(request_obj.id), 'reason': reason}
+        )
+        return request_obj

@@ -72,7 +72,14 @@ class RoundRobinLoadBalancedStrategy(DistributionStrategy):
             result = AssignmentResult(lead=lead, team=selected_team, salesman=None, strategy_code=self.code, reason='Assigned to team; Sales Head decides.')
             self.persist_assignment(lead=lead, result=result, actor=actor)
             return result
-        candidates = self.eligible_sales_profiles(lead=lead, team=selected_team, language=language).order_by('active_lead_count_cache', 'last_received_lead_at', 'user__date_joined')
+        
+        from django.db.models import F
+        candidates = self.eligible_sales_profiles(lead=lead, team=selected_team, language=language)
+        candidates = candidates.order_by(
+            'active_lead_count_cache',
+            F('last_received_lead_at').asc(nulls_first=True),
+            'user__date_joined'
+        )
         profile = candidates.first()
         if not profile:
             raise ValueError('No eligible salesman found for lead distribution.')
@@ -102,13 +109,39 @@ class ByTurnSequentialStrategy(DistributionStrategy):
             result = AssignmentResult(lead=lead, team=selected_team, salesman=None, strategy_code=self.code, reason='Sequential team rotation; Sales Head decides.')
             self.persist_assignment(lead=lead, result=result, actor=actor)
             return result
-        candidates = list(self.eligible_sales_profiles(lead=lead, team=selected_team, language=language).order_by('user__email'))
-        if not candidates:
-            raise ValueError('No eligible salesman found for sequential distribution.')
+
+        # Get all sales profiles for company/team to keep the index stable
+        all_profiles = SalesProfile.objects.select_related('user').filter(company=lead.company)
+        if selected_team:
+            all_profiles = all_profiles.filter(user__team_memberships__team=selected_team, user__team_memberships__is_active=True)
+        all_profiles = list(all_profiles.order_by('user__email'))
+
+        if not all_profiles:
+            raise ValueError('No sales profiles found for sequential distribution.')
+
         from apps.distribution.selectors import get_rotation_pointer_for_update
         pointer = get_rotation_pointer_for_update(lead.company, self.code, scope_mode, team=selected_team)
-        profile = candidates[pointer.position % len(candidates)]
-        pointer.position = (pointer.position + 1) % len(candidates)
+        attempts = 0
+        profile = None
+        while attempts < len(all_profiles):
+            candidate = all_profiles[pointer.position % len(all_profiles)]
+            # Advance position in pointer
+            pointer.position = (pointer.position + 1) % len(all_profiles)
+            
+            # Check eligibility: is active, available, language matches, and workload limit not exceeded
+            is_active = candidate.user.is_active
+            is_available = candidate.is_available
+            matches_lang = (not language) or candidate.languages.filter(pk=language.pk).exists()
+            limit_ok = (candidate.max_active_leads is None) or (candidate.active_lead_count_cache < candidate.max_active_leads)
+            
+            if is_active and is_available and matches_lang and limit_ok:
+                profile = candidate
+                break
+            attempts += 1
+
+        if not profile:
+            raise ValueError('No eligible salesman found for sequential distribution.')
+
         pointer.last_user = profile.user
         pointer.save(update_fields=['position', 'last_user', 'updated_at'])
         result = AssignmentResult(lead=lead, team=selected_team, salesman=profile.user, strategy_code=self.code, reason='Fixed sequential rotation.')
@@ -121,6 +154,37 @@ class ManualAssignmentStrategy(DistributionStrategy):
     name = 'Manual Assignment'
 
     def assign(self, *, lead, actor=None, scope_mode='manual', team=None, salesman=None, **kwargs):
+        from apps.permissions_engine.services.engine import PermissionEngine
+        
+        # Validate actor permission
+        if actor and not actor.is_superuser and not actor.is_staff:
+            if not (PermissionEngine.has_perm(actor, 'leads.assign_lead_manual') or PermissionEngine.has_perm(actor, 'distribution.run_manual_distribution')):
+                raise ValueError("Actor does not have permission to manually assign leads.")
+
+        # Validate team
+        if team:
+            if team.company != lead.company:
+                raise ValueError("Team must belong to the same company as the lead.")
+            if not team.is_active:
+                raise ValueError("Team must be active.")
+
+        # Validate salesman
+        if salesman:
+            if not hasattr(salesman, 'sales_profile') or salesman.sales_profile.company != lead.company:
+                raise ValueError("Salesman must belong to the same company as the lead.")
+            if not salesman.is_active:
+                raise ValueError("Salesman must be active.")
+            
+            # Validate team membership
+            if team:
+                if not salesman.team_memberships.filter(team=team, is_active=True).exists():
+                    raise ValueError(f"Salesman {salesman.email} is not an active member of team {team.name}.")
+            
+            # Validate language match
+            if lead.language:
+                if not salesman.sales_profile.languages.filter(pk=lead.language.pk).exists():
+                    raise ValueError(f"Salesman {salesman.email} does not support language {lead.language.name}.")
+
         result = AssignmentResult(lead=lead, team=team, salesman=salesman, strategy_code=self.code, assignment_type='manual', reason='Manual assignment by authorized user.')
         self.persist_assignment(lead=lead, result=result, actor=actor)
         return result
@@ -138,32 +202,41 @@ class RetryTeamEscalationStrategy(ByTurnSequentialStrategy):
     def assign(self, *, lead, actor=None, scope_mode='team_then_salesman', team=None, language=None, **kwargs):
         from apps.core.services.policies import PolicyResolver
         from apps.distribution.selectors import get_last_assignment_attempt
+        
+        # Verify lead.origin != 'broker'
+        if lead.origin == 'broker':
+            raise ValueError("Broker escalation must be manual.")
+
         n = max(1, PolicyResolver.get_int(lead.company, 'retry_attempts_per_team', default=3))
         
         last_attempt = get_last_assignment_attempt(lead)
         
         # Scenario 1: Initial assignment (no previous attempts)
         if not last_attempt:
-            selected_team = team
-            if scope_mode in ('team_then_salesman', 'team_then_sales_head') and selected_team is None:
-                from apps.distribution.selectors import get_active_teams, get_rotation_pointer_for_update
-                teams = list(get_active_teams(lead.company))
-                if not teams:
-                    raise ValueError('No active teams available for distribution.')
-                pointer = get_rotation_pointer_for_update(lead.company, self.code, 'teams')
-                selected_team = teams[pointer.position % len(teams)]
-                pointer.position = (pointer.position + 1) % len(teams)
-                pointer.last_team = selected_team
-                pointer.save(update_fields=['position', 'last_team', 'updated_at'])
+            # Seed attempt 1 from the currently assigned salesman on SLA expiry
+            if lead.current_salesman:
+                selected_team = lead.current_team
+                salesman = lead.current_salesman
             else:
-                from apps.distribution.selectors import get_active_teams
-                selected_team = selected_team or get_active_teams(lead.company).first()
-            
-            # Select the first salesman sequentially in the selected team
-            candidates = list(self.eligible_sales_profiles(lead=lead, team=selected_team, language=language).order_by('user__email'))
-            if not candidates:
-                raise ValueError(f'No available salesman in team {selected_team.name if selected_team else "None"}.')
-            salesman = candidates[0].user
+                selected_team = team
+                if scope_mode in ('team_then_salesman', 'team_then_sales_head') and selected_team is None:
+                    from apps.distribution.selectors import get_active_teams, get_rotation_pointer_for_update
+                    teams = list(get_active_teams(lead.company))
+                    if not teams:
+                        raise ValueError('No active teams available for distribution.')
+                    pointer = get_rotation_pointer_for_update(lead.company, self.code, 'teams')
+                    selected_team = teams[pointer.position % len(teams)]
+                    pointer.position = (pointer.position + 1) % len(teams)
+                    pointer.last_team = selected_team
+                    pointer.save(update_fields=['position', 'last_team', 'updated_at'])
+                else:
+                    from apps.distribution.selectors import get_active_teams
+                    selected_team = selected_team or get_active_teams(lead.company).first()
+                
+                candidates = list(self.eligible_sales_profiles(lead=lead, team=selected_team, language=language).order_by('user__email'))
+                if not candidates:
+                    raise ValueError(f'No available salesman in team {selected_team.name if selected_team else "None"}.')
+                salesman = candidates[0].user
             
             # Create attempt 1
             new_attempt = AssignmentAttempt.objects.create(
@@ -180,7 +253,7 @@ class RetryTeamEscalationStrategy(ByTurnSequentialStrategy):
                 salesman=salesman,
                 strategy_code=self.code,
                 assignment_type='automatic',
-                reason=f"Initial retry team escalation routing: Team {selected_team.name}, Salesman {salesman.email} (Attempt 1)"
+                reason=f"Initial retry team escalation routing: Team {selected_team.name if selected_team else 'None'}, Salesman {salesman.email} (Attempt 1)"
             )
             self.persist_assignment(lead=lead, result=result, actor=actor)
             return result
@@ -200,17 +273,15 @@ class RetryTeamEscalationStrategy(ByTurnSequentialStrategy):
                     # No salesmen available, trigger escalation to next team
                     last_attempt.attempt_no = n # Force escalation trigger in the next block
                 else:
-                    # Find next sequential salesman in same team.  If there is more than
-                    # one eligible salesman, do not immediately route back to the same user.
+                    # Find next sequential salesman in same team.
                     next_salesman = None
-                    for idx, cand in enumerate(candidates):
-                        if cand.user == last_attempt.salesman:
-                            next_salesman = candidates[(idx + 1) % len(candidates)].user
-                            break
+                    if last_attempt.salesman:
+                        for cand in candidates:
+                            if cand.user.email > last_attempt.salesman.email:
+                                next_salesman = cand.user
+                                break
                     if not next_salesman:
                         next_salesman = candidates[0].user
-                    if len(candidates) > 1 and next_salesman == last_attempt.salesman:
-                        next_salesman = next(c.user for c in candidates if c.user != last_attempt.salesman)
                         
                     new_attempt = AssignmentAttempt.objects.create(
                         lead=lead,
@@ -237,21 +308,34 @@ class RetryTeamEscalationStrategy(ByTurnSequentialStrategy):
             if not teams:
                 raise ValueError('No active teams available for escalation.')
                 
-            # Rotate to next team sequentially
-            pointer = get_rotation_pointer_for_update(lead.company, self.code, 'teams')
+            # Rotate to next team sequentially, skipping teams with no available salesmen
             next_team_idx = 0
             for idx, t in enumerate(teams):
                 if t == last_attempt.team:
                     next_team_idx = (idx + 1) % len(teams)
                     break
-            selected_team = teams[next_team_idx]
+            
+            selected_team = None
+            candidates = []
+            attempts_teams = 0
+            while attempts_teams < len(teams):
+                team_to_try = teams[(next_team_idx + attempts_teams) % len(teams)]
+                cands = list(self.eligible_sales_profiles(lead=lead, team=team_to_try, language=language).order_by('user__email'))
+                if cands:
+                    selected_team = team_to_try
+                    candidates = cands
+                    next_team_idx = (next_team_idx + attempts_teams) % len(teams)
+                    break
+                attempts_teams += 1
+                
+            if not selected_team:
+                raise ValueError('No active teams with available salesmen for escalation.')
+                
+            pointer = get_rotation_pointer_for_update(lead.company, self.code, 'teams')
             pointer.position = (next_team_idx + 1) % len(teams)
             pointer.last_team = selected_team
             pointer.save(update_fields=['position', 'last_team', 'updated_at'])
             
-            candidates = list(self.eligible_sales_profiles(lead=lead, team=selected_team, language=language).order_by('user__email'))
-            if not candidates:
-                raise ValueError(f'No available salesman in escalated team {selected_team.name}.')
             salesman = candidates[0].user
             
             new_attempt = AssignmentAttempt.objects.create(

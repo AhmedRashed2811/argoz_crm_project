@@ -6,6 +6,7 @@ from apps.sla.models import SLADefinition, LeadSLAInstance
 from apps.distribution.services.distribution import DistributionService
 from apps.audit.services.audit import AuditService
 from apps.notifications.services.notifications import NotificationService
+from apps.core.services.policies import PolicyResolver
 
 
 # ---------------------------------------------------------------------------
@@ -212,11 +213,12 @@ class SLAService:
             active_attempt.save(update_fields=['status', 'ended_at'])
 
         strategy_code = sla.policy_snapshot.get('expiry_strategy_code') or 'round_robin_load_balanced'
-        breach_action = sla.policy_snapshot.get('breach_action') or 'automatic_redistribution'
-
-        # Broker leads always get manual reassignment
-        if lead.origin == 'broker' and breach_action == 'automatic_redistribution':
-            breach_action = 'manual_reassignment'
+        
+        # Resolve breach action dynamically from company policies
+        if lead.origin == 'broker':
+            breach_action = PolicyResolver.get_code(lead.company, 'sla_breach_action_broker', 'manual_reassignment')
+        else:
+            breach_action = PolicyResolver.get_code(lead.company, 'sla_breach_action_direct', 'automatic_redistribution')
 
         # --- Stage-specific SLA expiry behaviour ---
         stage_code = lead.current_stage.code if lead.current_stage else 'fresh'

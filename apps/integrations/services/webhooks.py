@@ -36,7 +36,7 @@ class IncomingWebhookService:
         endpoint.save(update_fields=['last_used_at', 'updated_at'])
         idem = cls.extract_idempotency_key(raw_payload)
         payload, created = IncomingWebhookPayload.objects.get_or_create(endpoint=endpoint, idempotency_key=idem, defaults={'raw_payload': raw_payload})
-        if not created and payload.processing_status == 'processed':
+        if not created and payload.processing_status in ('processed', 'reprocessed'):
             return payload
         try:
             lead = cls.process_payload(payload)

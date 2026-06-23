@@ -1,6 +1,7 @@
 import csv
 import io
-from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
+from django.contrib.auth.mixins import LoginRequiredMixin
+from apps.permissions_engine.mixins import CRMPermissionRequiredMixin
 from django.http import HttpResponse
 from django.views.generic import FormView, View
 from django.urls import reverse_lazy
@@ -10,10 +11,10 @@ from apps.leads.services.leads import LeadService
 from apps.audit.services.audit import AuditService
 
 
-class LeadImportView(LoginRequiredMixin, PermissionRequiredMixin, FormView):
+class LeadImportView(LoginRequiredMixin, CRMPermissionRequiredMixin, FormView):
     """Import leads from a CSV file."""
     template_name = 'leads/lead_import.html'
-    permission_required = 'leads.import_leads'
+    permission_required = 'leads.create_lead'
     success_url = reverse_lazy('leads:list')
 
     def get_form_class(self):
@@ -86,9 +87,9 @@ class LeadImportView(LoginRequiredMixin, PermissionRequiredMixin, FormView):
         return super().form_valid(form)
 
 
-class LeadExportView(LoginRequiredMixin, PermissionRequiredMixin, View):
+class LeadExportView(LoginRequiredMixin, CRMPermissionRequiredMixin, View):
     """Export leads as CSV."""
-    permission_required = 'leads.export_leads'
+    permission_required = 'leads.view_lead'
 
     def get(self, request):
         company = request.user.company

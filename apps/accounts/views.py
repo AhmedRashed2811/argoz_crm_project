@@ -1,6 +1,7 @@
 from collections import OrderedDict
 from django.contrib.auth.views import LoginView, LogoutView
-from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
+from django.contrib.auth.mixins import LoginRequiredMixin
+from apps.permissions_engine.mixins import CRMPermissionRequiredMixin
 from django.contrib.auth.models import Group, Permission
 from django.http import JsonResponse
 from django.urls import reverse_lazy
@@ -68,14 +69,17 @@ class CRMLogoutView(LogoutView):
     pass
 
 
-class UserListView(LoginRequiredMixin, PermissionRequiredMixin, ListView):
+class UserListView(LoginRequiredMixin, CRMPermissionRequiredMixin, ListView):
     model = User
     template_name = 'accounts/user_list.html'
     context_object_name = 'users'
     permission_required = 'accounts.view_users'
 
     def get_queryset(self):
+        user = self.request.user
         qs = User.objects.select_related('company').prefetch_related('groups').order_by('email')
+        if not user.is_superuser:
+            qs = qs.filter(company=user.company)
         q = self.request.GET.get('q')
         group = self.request.GET.get('group')
         if q:
@@ -90,12 +94,17 @@ class UserListView(LoginRequiredMixin, PermissionRequiredMixin, ListView):
         return ctx
 
 
-class UserCreateView(LoginRequiredMixin, PermissionRequiredMixin, CreateView):
+class UserCreateView(LoginRequiredMixin, CRMPermissionRequiredMixin, CreateView):
     model = User
     form_class = CRMUserCreationForm
     template_name = 'accounts/user_form.html'
     success_url = reverse_lazy('accounts:user_list')
     permission_required = 'accounts.create_user'
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs['user'] = self.request.user
+        return kwargs
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
@@ -122,12 +131,23 @@ class UserCreateView(LoginRequiredMixin, PermissionRequiredMixin, CreateView):
         return response
 
 
-class UserUpdateView(LoginRequiredMixin, PermissionRequiredMixin, UpdateView):
+class UserUpdateView(LoginRequiredMixin, CRMPermissionRequiredMixin, UpdateView):
     model = User
     form_class = CRMUserUpdateForm
     template_name = 'accounts/user_form.html'
     success_url = reverse_lazy('accounts:user_list')
     permission_required = 'accounts.update_user'
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs['user'] = self.request.user
+        return kwargs
+
+    def get_queryset(self):
+        user = self.request.user
+        if not user.is_superuser:
+            return User.objects.filter(company=user.company)
+        return User.objects.all()
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
@@ -178,23 +198,48 @@ class UserUpdateView(LoginRequiredMixin, PermissionRequiredMixin, UpdateView):
         return response
 
 
-class UserDetailView(LoginRequiredMixin, DetailView):
+class UserDetailView(LoginRequiredMixin, CRMPermissionRequiredMixin, DetailView):
     model = User
     template_name = 'accounts/user_detail.html'
     context_object_name = 'crm_user'
+    permission_required = 'accounts.view_users'
+
+    def get_queryset(self):
+        user = self.request.user
+        if not user.is_superuser:
+            return User.objects.filter(company=user.company)
+        return User.objects.all()
 
 
-class TeamListView(LoginRequiredMixin, ListView):
+class TeamListView(LoginRequiredMixin, CRMPermissionRequiredMixin, ListView):
     model = Team
     template_name = 'accounts/team_list.html'
     context_object_name = 'teams'
+    permission_required = 'companies.manage_company_policy'
+
+    def get_queryset(self):
+        user = self.request.user
+        if not user.is_superuser:
+            return Team.objects.filter(company=user.company)
+        return Team.objects.all()
 
 
-class TeamCreateView(LoginRequiredMixin, CreateView):
+class TeamCreateView(LoginRequiredMixin, CRMPermissionRequiredMixin, CreateView):
     model = Team
     form_class = TeamForm
     template_name = 'accounts/team_form.html'
     success_url = reverse_lazy('accounts:team_list')
+    permission_required = 'companies.manage_company_policy'
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs['user'] = self.request.user
+        return kwargs
+
+    def form_valid(self, form):
+        if not self.request.user.is_superuser:
+            form.instance.company = self.request.user.company
+        return super().form_valid(form)
 
 
 def ajax_group_permissions(request):

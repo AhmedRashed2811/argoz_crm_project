@@ -51,3 +51,29 @@ class AssignmentAttempt(UUIDBaseModel):
 
     class Meta:
         ordering = ['lead', 'attempt_no']
+
+
+class ManualDistributionRequest(UUIDBaseModel):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('assigned', 'Assigned'),
+        ('ignored', 'Ignored'),
+    ]
+    company = models.ForeignKey('companies.Company', on_delete=models.CASCADE, related_name='manual_distribution_requests')
+    lead = models.ForeignKey('leads.Lead', on_delete=models.CASCADE, related_name='manual_distribution_requests')
+    original_salesman = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='manual_distribution_originals')
+    original_team = models.ForeignKey('accounts.Team', null=True, blank=True, on_delete=models.SET_NULL, related_name='manual_distribution_original_teams')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    assigned_to = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='manual_distribution_assigned')
+    actioned_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='manual_distribution_actioned')
+    actioned_at = models.DateTimeField(null=True, blank=True)
+    reason = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['company', 'status', 'created_at']),
+        ]
+
+    def __str__(self):
+        return f"Manual dist request for {self.lead} - {self.status}"

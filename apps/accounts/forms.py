@@ -27,8 +27,13 @@ class CRMUserCreationForm(UserCreationForm):
         fields = ['company', 'email', 'username', 'first_name', 'last_name', 'phone', 'is_active', 'is_staff', 'primary_group', 'groups', 'user_permissions']
 
     def __init__(self, *args, **kwargs):
+        user = kwargs.pop('user', None)
         super().__init__(*args, **kwargs)
         decorate_fields(self)
+        if user and not user.is_superuser:
+            self.fields['company'].initial = user.company
+            self.fields['company'].disabled = True
+
 
     def save(self, commit=True):
         user = super().save(commit=False)
@@ -59,8 +64,12 @@ class CRMUserUpdateForm(forms.ModelForm):
         fields = ['company', 'email', 'username', 'first_name', 'last_name', 'phone', 'is_active', 'is_staff', 'primary_group', 'groups', 'user_permissions']
 
     def __init__(self, *args, **kwargs):
+        user = kwargs.pop('user', None)
         super().__init__(*args, **kwargs)
         decorate_fields(self)
+        if user and not user.is_superuser:
+            self.fields['company'].initial = user.company
+            self.fields['company'].disabled = True
         if self.instance and self.instance.pk:
             self.fields['groups'].initial = self.instance.groups.all()
             self.fields['user_permissions'].initial = self.instance.user_permissions.all()
@@ -91,5 +100,10 @@ class TeamForm(forms.ModelForm):
         fields = ['company', 'name', 'code', 'sales_head', 'is_active', 'sort_order']
 
     def __init__(self, *args, **kwargs):
+        user = kwargs.pop('user', None)
         super().__init__(*args, **kwargs)
         decorate_fields(self)
+        if user and not user.is_superuser:
+            self.fields['company'].initial = user.company
+            self.fields['company'].disabled = True
+            self.fields['sales_head'].queryset = User.objects.filter(company=user.company, is_active=True)

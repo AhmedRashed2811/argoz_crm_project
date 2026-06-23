@@ -1,6 +1,7 @@
 from decimal import Decimal, InvalidOperation
 from django.contrib import messages
-from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
+from django.contrib.auth.mixins import LoginRequiredMixin
+from apps.permissions_engine.mixins import CRMPermissionRequiredMixin
 from django.http import JsonResponse, Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse, reverse_lazy
@@ -43,11 +44,11 @@ def list_at(values, index, default=''):
     return values[index] if index < len(values) else default
 
 
-class CampaignListView(LoginRequiredMixin, PermissionRequiredMixin, ListView):
+class CampaignListView(LoginRequiredMixin, CRMPermissionRequiredMixin, ListView):
     model = Campaign
     template_name = 'marketing/campaign_list.html'
     context_object_name = 'campaigns'
-    permission_required = 'marketing.view_campaigns'
+    permission_required = 'marketing.view_campaign'
 
     def get_queryset(self):
         user = self.request.user
@@ -60,10 +61,11 @@ class CampaignListView(LoginRequiredMixin, PermissionRequiredMixin, ListView):
         )
 
 
-class CampaignDetailView(LoginRequiredMixin, DetailView):
+class CampaignDetailView(LoginRequiredMixin, CRMPermissionRequiredMixin, DetailView):
     model = Campaign
     template_name = 'marketing/campaign_detail.html'
     context_object_name = 'campaign'
+    permission_required = 'marketing.view_campaign'
 
     def get_object(self, queryset=None):
         user = self.request.user
@@ -82,7 +84,7 @@ class CampaignDetailView(LoginRequiredMixin, DetailView):
         return ctx
 
 
-class CampaignCreateView(LoginRequiredMixin, PermissionRequiredMixin, View):
+class CampaignCreateView(LoginRequiredMixin, CRMPermissionRequiredMixin, View):
     permission_required = 'marketing.create_campaign'
     template_name = 'marketing/campaign_form.html'
 
@@ -234,12 +236,20 @@ class CampaignCreateView(LoginRequiredMixin, PermissionRequiredMixin, View):
             if value and reason.strip(): CampaignOtherCost.objects.create(campaign=campaign, value=as_decimal(value), reason=reason.strip(), cost_created_by=request.user)
 
 
-class CampaignUpdateView(LoginRequiredMixin, PermissionRequiredMixin, UpdateView):
+class CampaignUpdateView(LoginRequiredMixin, CRMPermissionRequiredMixin, UpdateView):
     model = Campaign
     form_class = CampaignForm
     template_name = 'marketing/campaign_edit.html'
     success_url = reverse_lazy('marketing:campaign_list')
     permission_required = 'marketing.update_campaign'
+
+    def get_queryset(self):
+        user = self.request.user
+        company = user.company if not user.is_superuser else None
+        qs = Campaign.objects.all()
+        if company:
+            qs = qs.filter(company=company)
+        return qs
 
     def form_valid(self, form):
         before = {}
@@ -255,11 +265,15 @@ class CampaignUpdateView(LoginRequiredMixin, PermissionRequiredMixin, UpdateView
         return response
 
 
-class CampaignDuplicateView(LoginRequiredMixin, PermissionRequiredMixin, View):
+class CampaignDuplicateView(LoginRequiredMixin, CRMPermissionRequiredMixin, View):
     permission_required = 'marketing.create_campaign'
 
     def post(self, request, pk):
-        campaign = get_object_or_404(Campaign, pk=pk)
+        user = request.user
+        company = user.company if not user.is_superuser else None
+        campaign = get_campaign_by_id(company, pk)
+        if not campaign:
+            raise Http404("Campaign not found or access denied.")
         try:
             new_campaign = CampaignService.duplicate_campaign(campaign, actor=request.user)
             messages.success(request, f'Campaign duplicated successfully as "{new_campaign.name}".')
@@ -269,11 +283,15 @@ class CampaignDuplicateView(LoginRequiredMixin, PermissionRequiredMixin, View):
             return redirect('marketing:campaign_detail', pk=campaign.pk)
 
 
-class CampaignArchiveView(LoginRequiredMixin, PermissionRequiredMixin, View):
-    permission_required = 'marketing.delete_campaign'
+class CampaignArchiveView(LoginRequiredMixin, CRMPermissionRequiredMixin, View):
+    permission_required = 'marketing.update_campaign'
 
     def post(self, request, pk):
-        campaign = get_object_or_404(Campaign, pk=pk)
+        user = request.user
+        company = user.company if not user.is_superuser else None
+        campaign = get_campaign_by_id(company, pk)
+        if not campaign:
+            raise Http404("Campaign not found or access denied.")
         try:
             CampaignService.archive_campaign(campaign, actor=request.user)
             messages.success(request, f'Campaign "{campaign.name}" archived successfully.')
@@ -282,7 +300,7 @@ class CampaignArchiveView(LoginRequiredMixin, PermissionRequiredMixin, View):
         return redirect('marketing:campaign_list')
 
 
-class ApprovalQueueView(LoginRequiredMixin, PermissionRequiredMixin, ListView):
+class ApprovalQueueView(LoginRequiredMixin, CRMPermissionRequiredMixin, ListView):
     model = Campaign
     template_name = 'marketing/approval_queue.html'
     context_object_name = 'campaigns'
@@ -294,7 +312,11 @@ class ApprovalQueueView(LoginRequiredMixin, PermissionRequiredMixin, ListView):
         return get_pending_approvals_list(company)
 
     def post(self, request):
-        campaign = get_object_or_404(Campaign, pk=request.POST.get('campaign_id'))
+        user = request.user
+        company = user.company if not user.is_superuser else None
+        campaign = get_campaign_by_id(company, request.POST.get('campaign_id'))
+        if not campaign:
+            raise Http404("Campaign not found or access denied.")
         try:
             CampaignApprovalService.decide(campaign=campaign, new_status=request.POST.get('new_status'), actor=request.user, reason=request.POST.get('reason',''))
             if request.headers.get('X-Requested-With'):
@@ -307,8 +329,9 @@ class ApprovalQueueView(LoginRequiredMixin, PermissionRequiredMixin, ListView):
         return redirect('marketing:approval_queue')
 
 
-class ROIReportView(LoginRequiredMixin, TemplateView):
+class ROIReportView(LoginRequiredMixin, CRMPermissionRequiredMixin, TemplateView):
     template_name = 'marketing/roi_report.html'
+    permission_required = 'marketing.view_campaign_roi'
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)

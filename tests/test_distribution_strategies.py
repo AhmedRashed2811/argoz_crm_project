@@ -57,3 +57,30 @@ class DistributionStrategiesTestCase(TestCase):
         self.assertEqual(attempts[0].attempt_no, 1)
         self.assertEqual(attempts[1].attempt_no, 2)
         self.assertGreater(attempts[1].due_at, timezone.now())
+
+    def test_manual_assignment_validations(self):
+        lead = Lead.objects.create(company=self.company, full_name='L1', phone_number='123456789', normalized_phone='123456789', source=self.source, current_stage=self.stage)
+        
+        # Other company
+        other_company = Company.objects.create(name='Other Co', slug='other-co')
+        other_team = Team.objects.create(company=other_company, code='other-team', name='Other Team')
+        
+        # Team validation: must belong to the same company
+        with self.assertRaises(ValueError):
+            DistributionService.assign(lead=lead, strategy_code='manual_assignment', team=other_team, salesman=None)
+            
+        # Salesman validation: must belong to the same company
+        other_sales = User.objects.create(email='other_sales@test.com', company=other_company)
+        SalesProfile.objects.create(user=other_sales, company=other_company, active_lead_count_cache=0)
+        with self.assertRaises(ValueError):
+            DistributionService.assign(lead=lead, strategy_code='manual_assignment', team=None, salesman=other_sales)
+
+    def test_retry_team_escalation_broker_validation(self):
+        broker_lead = Lead.objects.create(
+            company=self.company, full_name='Broker Lead', phone_number='111222333', 
+            normalized_phone='111222333', source=self.source, origin='broker', current_stage=self.stage
+        )
+        
+        # Should raise ValueError because broker escalation must be manual
+        with self.assertRaises(ValueError):
+            DistributionService.assign(lead=broker_lead, strategy_code='retry_team_escalation', team=self.team1)

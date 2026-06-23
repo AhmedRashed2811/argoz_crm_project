@@ -55,7 +55,8 @@ class CampaignBudgetTestCase(TestCase):
             venue_place='HQ',
             event_date='2026-06-15',
             budget=Decimal('1000.00'),
-            target_attendees=500
+            target_attendees=500,
+            actual_attendees=500
         )
         
         social = SocialMediaAd.objects.create(
@@ -117,4 +118,52 @@ class CampaignBudgetTestCase(TestCase):
         
         fb_cpl_kpi = CampaignKPIResult.objects.get(campaign=self.campaign, metric_code='platform_facebook_cpl')
         self.assertEqual(fb_cpl_kpi.metric_value, Decimal('600.00'))
+
+    def test_event_attendance_and_platform_roi(self):
+        from apps.marketing.models import CampaignEvent, SocialMediaAd, SocialMediaPlatformLine, EventAttendance, CampaignKPIResult
+        from apps.marketing.services.roi_service import ROIService
+        
+        # 1. Create an event
+        event = CampaignEvent.objects.create(
+            campaign=self.campaign,
+            event_name='Launch Gala',
+            venue_place='HQ',
+            event_date='2026-06-15',
+            budget=Decimal('1000.00'),
+            target_attendees=100
+        )
+        
+        # 2. Check signals recalculate budget automatically
+        self.campaign.refresh_from_db()
+        self.assertEqual(self.campaign.total_budget, Decimal('1000.00'))
+        
+        # 3. Create EventAttendance records
+        from apps.leads.models import Lead, LeadSource
+        source = LeadSource.objects.create(company=self.company, name='Facebook ad')
+        lead1 = Lead.objects.create(company=self.company, full_name='L1', phone_number='123', normalized_phone='123', source=source)
+        lead2 = Lead.objects.create(company=self.company, full_name='L2', phone_number='456', normalized_phone='456', source=source)
+        
+        # Add attendees
+        EventAttendance.objects.create(company=self.company, event=event, lead=lead1, attended=True, platform='facebook')
+        EventAttendance.objects.create(company=self.company, event=event, lead=lead2, attended=True, platform='facebook')
+        
+        # 4. Check recalculation of event ROI and platform ROI
+        res = ROIService.recalculate_all_kpis(self.campaign)
+        # It should count 2 actual attendees instead of relying on target_attendees
+        self.assertEqual(res['total_attendees'], 2)
+        # CPA = 1000.00 / 2 = 500.00
+        self.assertEqual(res['cpa'], Decimal('500.00'))
+        
+        # Add platform budget
+        social = SocialMediaAd.objects.create(campaign=self.campaign, name='FB Ads')
+        SocialMediaPlatformLine.objects.create(social_ad=social, platform='facebook', budget=Decimal('200.00'), target_value=10)
+        
+        # Check total budget recalculated via signal: 1000 + 200 = 1200
+        self.campaign.refresh_from_db()
+        self.assertEqual(self.campaign.total_budget, Decimal('1200.00'))
+        
+        res = ROIService.recalculate_all_kpis(self.campaign)
+        # platform facebook cpa should be platform budget (200) / platform attendees (2) = 100.00
+        self.assertEqual(res['platform_metrics']['facebook']['cpa'], Decimal('100.00'))
+        self.assertEqual(res['platform_metrics']['facebook']['attendees'], 2)
 
