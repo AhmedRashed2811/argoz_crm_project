@@ -70,7 +70,7 @@ class LeadService:
 
     @staticmethod
     def create_lead_from_source(*, company, full_name, phone_country_code='+20', phone_number='', source,
-                                origin=None, actor=None, metadata=None, **kwargs):
+                                origin=None, actor=None, metadata=None, team=None, salesman=None, **kwargs):
         """Create a lead and immediately apply the document's source-specific backend workflow.
 
         This keeps lead creation, duplicate handling, attribution, assignment, and SLA start
@@ -81,16 +81,33 @@ class LeadService:
         if origin is None:
             origin = Lead.ORIGIN_BROKER if source_code == 'broker' else Lead.ORIGIN_DIRECT
 
+        # If team or salesman is passed inside metadata, pop and resolve them
+        if not team:
+            team = metadata.pop('team', None)
+        else:
+            metadata.pop('team', None)
+
+        if not salesman:
+            salesman = metadata.pop('salesman', None)
+        else:
+            metadata.pop('salesman', None)
+
+        from apps.accounts.models import User, Team
+        if isinstance(team, str):
+            team = Team.objects.filter(pk=team).first()
+        if isinstance(salesman, str):
+            salesman = User.objects.filter(pk=salesman).first()
+
         # Minimal backend validations from the functional document.
         if getattr(source, 'requires_how_did_you_know', False) and not (kwargs.get('how_did_you_know') or metadata.get('how_did_you_know')):
             raise ValueError('This lead source requires a "How did you know us" value. The Website option must be available in master data.')
-        if source_code == 'exhibition' and not metadata.get('salesman'):
+        if source_code == 'exhibition' and not salesman:
             raise ValueError('Exhibition leads must be manually assigned to a salesman and cannot remain unassigned.')
         if source_code == 'referral' and not metadata.get('referrer_name'):
             raise ValueError('Referral leads must capture the referrer name as free text.')
         if source_code == 'campaign' and not (kwargs.get('campaign') or metadata.get('campaign')):
             raise ValueError('Campaign leads must be attributed to a campaign.')
-        if source_code == 'walkin' and metadata.get('how_did_you_know_name') == '':
+        if source_code == 'walkin' and metadata.get('how_did_you_know_name') == '' and not kwargs.get('how_did_you_know'):
             raise ValueError('Walk-in leads must capture how the visitor knew the company.')
         if source_code == 'call_center' and not (metadata.get('caller_source') or metadata.get('how_did_you_know') or kwargs.get('how_did_you_know')):
             raise ValueError('Call Center leads must capture caller source information.')
@@ -116,7 +133,7 @@ class LeadService:
             **kwargs,
         )
         if created:
-            LeadService.assign_lead_by_source(lead=lead, actor=actor, source_code=source_code, metadata=merged_metadata)
+            LeadService.assign_lead_by_source(lead=lead, actor=actor, source_code=source_code, metadata=merged_metadata, team=team, salesman=salesman)
         return lead, created
 
     @staticmethod
@@ -155,7 +172,7 @@ class LeadService:
         return result
 
     @staticmethod
-    def assign_lead_by_source(*, lead, actor, source_code, metadata=None):
+    def assign_lead_by_source(*, lead, actor, source_code, metadata=None, team=None, salesman=None):
         """Source-aware assignment that applies all business rules from Doc 2 Section 4.2."""
         metadata = metadata or {}
         source_code = normalize_source_code(source_code)
@@ -163,7 +180,7 @@ class LeadService:
 
         # --- a) Self-Generated ---
         if source_code == 'self_generated':
-            return LeadService._assign_self_generated(lead=lead, actor=actor, metadata=metadata)
+            return LeadService._assign_self_generated(lead=lead, actor=actor, metadata=metadata, team=team, salesman=salesman)
 
         # --- b) Campaign ---
         if source_code == 'campaign':
@@ -173,35 +190,34 @@ class LeadService:
             dist_mode = metadata.get('distribution_mode', 'automatic')
             if dist_mode == 'manual':
                 return LeadService.assign_lead(lead=lead, actor=actor, strategy_code='manual_assignment',
-                                               team=metadata.get('team'), salesman=metadata.get('salesman'))
+                                               team=team, salesman=salesman)
             return LeadService.assign_lead(lead=lead, actor=actor, strategy_code=strategy)
 
         # --- c) Broker ---
         if source_code == 'broker':
-            return LeadService._assign_broker(lead=lead, actor=actor, metadata=metadata)
+            return LeadService._assign_broker(lead=lead, actor=actor, metadata=metadata, team=team, salesman=salesman)
 
         # --- d) Walk-in ---
         if source_code == 'walkin':
-            return LeadService._assign_walkin(lead=lead, actor=actor, metadata=metadata)
+            return LeadService._assign_walkin(lead=lead, actor=actor, metadata=metadata, team=team, salesman=salesman)
 
         # --- e) Call Center ---
         if source_code == 'call_center':
-            if not (metadata.get('caller_source') or metadata.get('how_did_you_know')):
+            if not (metadata.get('caller_source') or metadata.get('how_did_you_know') or lead.how_did_you_know_id):
                 raise ValueError('Call Center leads must capture caller_source or how_did_you_know.')
             strategy = PolicyResolver.get_distribution_strategy_code(company, 'call_center')
             dist_mode = metadata.get('distribution_mode', 'automatic')
             if dist_mode == 'manual':
                 return LeadService.assign_lead(lead=lead, actor=actor, strategy_code='manual_assignment',
-                                               team=metadata.get('team'), salesman=metadata.get('salesman'))
+                                               team=team, salesman=salesman)
             return LeadService.assign_lead(lead=lead, actor=actor, strategy_code=strategy)
 
         # --- f) Exhibition ---
         if source_code == 'exhibition':
-            salesman = metadata.get('salesman')
             if not salesman:
                 raise ValueError('Exhibition leads must be assigned to a salesman.')
             return LeadService.assign_lead(lead=lead, actor=actor, strategy_code='manual_assignment',
-                                           salesman=salesman, team=metadata.get('team'))
+                                           salesman=salesman, team=team)
 
         # --- g) Referral ---
         if source_code == 'referral':
@@ -211,7 +227,7 @@ class LeadService:
             dist_mode = metadata.get('distribution_mode', 'automatic')
             if dist_mode == 'manual':
                 return LeadService.assign_lead(lead=lead, actor=actor, strategy_code='manual_assignment',
-                                               team=metadata.get('team'), salesman=metadata.get('salesman'))
+                                               team=team, salesman=salesman)
             return LeadService.assign_lead(lead=lead, actor=actor, strategy_code=strategy)
 
         # --- h) Existing Client ---
@@ -222,7 +238,7 @@ class LeadService:
         return LeadService.assign_lead(lead=lead, actor=actor)
 
     @staticmethod
-    def _assign_self_generated(*, lead, actor, metadata):
+    def _assign_self_generated(*, lead, actor, metadata, team=None, salesman=None):
         """Self-generated business rules from Doc 2 Section 4.2a."""
         from apps.accounts.models import TeamMembership
 
@@ -235,8 +251,10 @@ class LeadService:
 
         if is_sales_head:
             # Sales Head: may assign to himself, a team member, or run team-level Round Robin
-            salesman = metadata.get('salesman')
-            team = metadata.get('team')
+            if not salesman:
+                salesman = metadata.get('salesman')
+            if not team:
+                team = metadata.get('team')
             if salesman:
                 return LeadService.assign_lead(lead=lead, actor=actor, strategy_code='manual_assignment',
                                                salesman=salesman, team=team)
@@ -252,7 +270,7 @@ class LeadService:
             return result
 
     @staticmethod
-    def _assign_broker(*, lead, actor, metadata):
+    def _assign_broker(*, lead, actor, metadata, team=None, salesman=None):
         """Broker business rules from Doc 2 Section 4.2c."""
         from apps.accounts.models import BrokerProfile
 
@@ -270,21 +288,20 @@ class LeadService:
             return result
         else:
             # Another user logged in: select broker, optionally assign salesman
-            salesman = metadata.get('salesman')
+            if not salesman:
+                salesman = metadata.get('salesman')
             if salesman:
                 return LeadService.assign_lead(lead=lead, actor=actor, strategy_code='manual_assignment',
-                                               salesman=salesman, team=metadata.get('team'))
+                                               salesman=salesman, team=team or metadata.get('team'))
             if broker_mode == 'assign_salesman':
                 return LeadService.assign_lead(lead=lead, actor=actor)
             # Remain with broker only — just mark as assigned
             return LeadService.assign_lead(lead=lead, actor=actor, strategy_code='manual_assignment')
 
     @staticmethod
-    def _assign_walkin(*, lead, actor, metadata):
+    def _assign_walkin(*, lead, actor, metadata, team=None, salesman=None):
         """Walk-in reception policy from Doc 2 Section 4.2d (3 policies)."""
         policy = PolicyResolver.get_walkin_policy(lead.company)
-        salesman = metadata.get('salesman')
-        team = metadata.get('team')
 
         strategy_map = {
             'open_floor': 'walkin_open_floor',
@@ -389,6 +406,12 @@ class LeadService:
         if new_stage.is_terminal:
             lead.status = Lead.STATUS_INACTIVE
         lead.save(update_fields=['current_stage', 'status', 'updated_at'])
+        
+        # Mark active assignment attempts as successful (contacted)
+        lead.assignment_attempts.filter(status='active').update(
+            status='successful', ended_at=timezone.now()
+        )
+        
         LeadStageHistory.objects.create(lead=lead, from_stage=old_stage, to_stage=new_stage, changed_by=actor, reason=reason)
         AuditService.log(company=lead.company, actor=actor, action='lead.stage_changed', obj=lead, before={'stage': getattr(old_stage, 'code', None)}, after={'stage': new_stage.code})
 

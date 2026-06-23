@@ -1,12 +1,14 @@
 from collections import OrderedDict
 from django.contrib.auth.mixins import LoginRequiredMixin
+from apps.permissions_engine.mixins import CRMPermissionRequiredMixin
 from django.contrib.auth.models import Group, Permission
 from django.views.generic import TemplateView, ListView
 from .models import UserPermissionOverride
 
 
-class PermissionMatrixView(LoginRequiredMixin, TemplateView):
+class PermissionMatrixView(LoginRequiredMixin, CRMPermissionRequiredMixin, TemplateView):
     template_name = 'permissions_engine/permission_matrix.html'
+    permission_required = 'companies.manage_company_policy'
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
@@ -21,7 +23,16 @@ class PermissionMatrixView(LoginRequiredMixin, TemplateView):
         return ctx
 
 
-class UserOverrideListView(LoginRequiredMixin, ListView):
+class UserOverrideListView(LoginRequiredMixin, CRMPermissionRequiredMixin, ListView):
     model = UserPermissionOverride
     template_name = 'permissions_engine/user_overrides.html'
     context_object_name = 'overrides'
+    permission_required = 'companies.manage_company_policy'
+
+    def get_queryset(self):
+        user = self.request.user
+        company = user.company if not user.is_superuser else None
+        qs = UserPermissionOverride.objects.all()
+        if company:
+            qs = qs.filter(user__company=company)
+        return qs

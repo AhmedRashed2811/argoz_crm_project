@@ -81,7 +81,16 @@ class LeadDetailView(LoginRequiredMixin, CRMPermissionRequiredMixin, DetailView)
         action = request.POST.get('action')
         if action == 'stage':
             stage = get_object_or_404(LeadStage, pk=request.POST.get('stage'), company=lead.company)
-            LeadService.change_stage(lead=lead, new_stage=stage, actor=request.user, reason=request.POST.get('reason',''))
+            due_at = request.POST.get('due_at') or None
+            scheduled_at = request.POST.get('scheduled_at') or None
+            freeze_end = request.POST.get('freeze_end') or None
+            location = request.POST.get('location') or ''
+            meeting_type = request.POST.get('meeting_type') or 'office'
+            LeadService.change_stage(
+                lead=lead, new_stage=stage, actor=request.user, reason=request.POST.get('reason',''),
+                due_at=due_at, scheduled_at=scheduled_at, freeze_end=freeze_end,
+                location=location, meeting_type=meeting_type
+            )
             msg = 'Lead stage updated.'
         elif action == 'activity':
             LeadActivity.objects.create(lead=lead, activity_type=request.POST.get('activity_type','note'), subject=request.POST.get('subject',''), body=request.POST.get('body',''), result=request.POST.get('result',''), created_by=request.user)
@@ -115,12 +124,16 @@ class LeadCreateView(LoginRequiredMixin, CRMPermissionRequiredMixin, View):
     def post(self, request):
         try:
             company = self._resolve_company(request)
-            source = LeadSource.objects.get(pk=request.POST.get('source'))
+            source = get_object_or_404(LeadSource, pk=request.POST.get('source'), company=company)
             stage = get_lead_stages(company).filter(code='fresh').first() or get_lead_stages(company).first()
             lang = get_languages(company).filter(pk=request.POST.get('language')).first()
             campaign = get_campaigns(company).filter(pk=request.POST.get('campaign')).first()
             broker = get_brokers(company).filter(pk=request.POST.get('broker')).first()
             how = get_how_options(company).filter(pk=request.POST.get('how_did_you_know')).first()
+
+            team = get_teams(company).filter(pk=request.POST.get('manual_team')).first()
+            salesman = get_salesmen(company).filter(pk=request.POST.get('manual_salesman')).first()
+
             metadata = {
                 'source_code': source.code,
                 'distribution_mode': request.POST.get('distribution_mode'),
@@ -130,8 +143,10 @@ class LeadCreateView(LoginRequiredMixin, CRMPermissionRequiredMixin, View):
                 'existing_client_phone': request.POST.get('existing_client_phone'),
                 'self_owner_mode': request.POST.get('self_owner_mode'),
                 'broker_assign_mode': request.POST.get('broker_assign_mode'),
+                'how_did_you_know_name': request.POST.get('how_did_you_know_name') or '',
+                'caller_source': request.POST.get('caller_source') or '',
             }
-            lead, created = LeadService.create_lead(
+            lead, created = LeadService.create_lead_from_source(
                 company=company,
                 full_name=request.POST.get('full_name','').strip(),
                 phone_country_code=request.POST.get('phone_country_code','+20'),
@@ -146,15 +161,10 @@ class LeadCreateView(LoginRequiredMixin, CRMPermissionRequiredMixin, View):
                 broker=broker,
                 how_did_you_know=how,
                 metadata=metadata,
+                team=team,
+                salesman=salesman,
             )
             if created:
-                assignment_mode = request.POST.get('distribution_mode')
-                team = get_teams(company).filter(pk=request.POST.get('manual_team')).first()
-                salesman = get_salesmen(company).filter(pk=request.POST.get('manual_salesman')).first()
-                if assignment_mode == 'manual' and (team or salesman):
-                    LeadService.assign_lead(lead=lead, actor=request.user, strategy_code='manual_assignment', team=team, salesman=salesman)
-                elif assignment_mode == 'automatic':
-                    LeadService.assign_lead(lead=lead, actor=request.user, strategy_code=request.POST.get('strategy_code') or None)
                 messages.success(request, 'Lead created and routed according to selected distribution policy.')
             else:
                 messages.warning(request, 'Duplicate lead detected. Existing lead opened instead.')
@@ -210,13 +220,25 @@ class LeadUpdateView(LoginRequiredMixin, CRMPermissionRequiredMixin, UpdateView)
 
 def ajax_source_rules(request):
     source_id = request.GET.get('source_id')
-    source = LeadSource.objects.filter(pk=source_id).first()
+    user = request.user
+    company = user.company if (user.is_authenticated and not user.is_superuser) else None
+    qs = LeadSource.objects.all()
+    if company:
+        qs = qs.filter(company=company)
+    source = qs.filter(pk=source_id).first()
+    if not source:
+        return JsonResponse({'error': 'Source not found or access denied'}, status=404)
     rule = SOURCE_RULES.get(source.code if source else '', {'title':'Unknown source','distribution':'Select a source.','show':[]})
     return JsonResponse(rule)
 
 
 def ajax_campaign_children(request):
-    campaign = get_object_or_404(Campaign, pk=request.GET.get('campaign_id'))
+    user = request.user
+    company = user.company if (user.is_authenticated and not user.is_superuser) else None
+    qs = Campaign.objects.all()
+    if company:
+        qs = qs.filter(company=company)
+    campaign = get_object_or_404(qs, pk=request.GET.get('campaign_id'))
     data = []
     for e in campaign.events.all(): data.append({'type':'event','id':str(e.id),'label':f'Event: {e.event_name}'})
     for s in campaign.social_ads.all(): data.append({'type':'social_media','id':str(s.id),'label':f'Social: {s.name}'})

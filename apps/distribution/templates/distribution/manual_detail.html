@@ -1,0 +1,90 @@
+{% extends 'base.html' %}
+{% block page_title %}Process Manual Request{% endblock %}
+{% block content %}
+<div class="card">
+    <div class="toolbar">
+        <div>
+            <h2 class="card-title">Process Manual Distribution</h2>
+            <div class="card-subtitle">Assign lead manually or ignore request.</div>
+        </div>
+        <a class="btn btn-soft" href="{% url 'distribution:list' %}">Back to Queue</a>
+    </div>
+</div>
+
+<div class="grid grid-2" style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+    <div class="card">
+        <h3>Lead Details</h3>
+        <table class="table" style="margin-top: 15px;">
+            <tr>
+                <td><strong>Name</strong></td>
+                <td>{{ request_obj.lead.full_name }}</td>
+            </tr>
+            <tr>
+                <td><strong>Phone</strong></td>
+                <td>{{ request_obj.lead.phone_country_code }} {{ request_obj.lead.phone_number }}</td>
+            </tr>
+            <tr>
+                <td><strong>Source</strong></td>
+                <td>{{ request_obj.lead.source.name }}</td>
+            </tr>
+            <tr>
+                <td><strong>Current Stage</strong></td>
+                <td>{{ request_obj.lead.current_stage.name|default:"—" }}</td>
+            </tr>
+            <tr>
+                <td><strong>Original Salesman</strong></td>
+                <td>{{ request_obj.original_salesman.email|default:"—" }}</td>
+            </tr>
+            <tr>
+                <td><strong>Original Team</strong></td>
+                <td>{{ request_obj.original_team.name|default:"—" }}</td>
+            </tr>
+            <tr>
+                <td><strong>Created At</strong></td>
+                <td>{{ request_obj.created_at|date:"Y-m-d H:i" }}</td>
+            </tr>
+        </table>
+    </div>
+
+    <div>
+        <div class="card">
+            <h3>Option A: Assign Manually</h3>
+            <form action="{% url 'distribution:assign' request_obj.pk %}" method="post" style="margin-top: 15px;">
+                {% csrf_token %}
+                <div class="form-group" style="margin-bottom: 15px;">
+                    <label for="salesman" style="display: block; margin-bottom: 5px; font-weight: 500;">Assign to Salesman</label>
+                    <select name="salesman" id="salesman" class="form-control" required style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #ddd;">
+                        <option value="">-- Select Salesman --</option>
+                        {% for sp in sales_profiles %}
+                        <option value="{{ sp.user.pk }}">{{ sp.user.email }} (Active Leads: {{ sp.active_lead_count_cache }})</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group" style="margin-bottom: 15px;">
+                    <label for="team" style="display: block; margin-bottom: 5px; font-weight: 500;">Assign to Team (Optional)</label>
+                    <select name="team" id="team" class="form-control" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #ddd;">
+                        <option value="">-- Select Team --</option>
+                        {% for t in teams %}
+                        <option value="{{ t.pk }}">{{ t.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <button type="submit" class="btn btn-primary">Assign Lead</button>
+            </form>
+        </div>
+
+        <div class="card" style="margin-top: 20px;">
+            <h3>Option B: Ignore Request</h3>
+            <p class="muted small" style="margin-bottom: 15px;">Ignoring will keep the lead assigned to the current owner and start a new SLA.</p>
+            <form action="{% url 'distribution:ignore' request_obj.pk %}" method="post">
+                {% csrf_token %}
+                <div class="form-group" style="margin-bottom: 15px;">
+                    <label for="reason" style="display: block; margin-bottom: 5px; font-weight: 500;">Reason for Ignoring</label>
+                    <textarea name="reason" id="reason" class="form-control" required style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #ddd; height: 80px;" placeholder="Provide a reason..."></textarea>
+                </div>
+                <button type="submit" class="btn btn-soft btn-warning">Ignore Request</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

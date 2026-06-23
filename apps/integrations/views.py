@@ -14,21 +14,40 @@ from .selectors import get_incoming_payload_by_id, get_webhook_endpoint_by_id
 from apps.audit.services.audit import AuditService
 
 
-class IntegrationListView(LoginRequiredMixin, ListView):
+class IntegrationListView(LoginRequiredMixin, CRMPermissionRequiredMixin, ListView):
     model = CompanyIntegration
     template_name = 'integrations/integration_list.html'
     context_object_name = 'integrations'
+    permission_required = 'integrations.manage_meta_connection'
+
+    def get_queryset(self):
+        user = self.request.user
+        company = user.company if not user.is_superuser else None
+        qs = CompanyIntegration.objects.all()
+        if company:
+            qs = qs.filter(company=company)
+        return qs
 
 
-class MetaSetupView(LoginRequiredMixin, TemplateView):
+class MetaSetupView(LoginRequiredMixin, CRMPermissionRequiredMixin, TemplateView):
     template_name = 'integrations/meta_setup.html'
+    permission_required = 'integrations.manage_meta_connection'
 
 
-class WebhookLogListView(LoginRequiredMixin, ListView):
+class WebhookLogListView(LoginRequiredMixin, CRMPermissionRequiredMixin, ListView):
     model = IncomingWebhookPayload
     template_name = 'integrations/webhook_logs.html'
     context_object_name = 'payloads'
     paginate_by = 50
+    permission_required = 'integrations.manage_meta_connection'
+
+    def get_queryset(self):
+        user = self.request.user
+        company = user.company if not user.is_superuser else None
+        qs = IncomingWebhookPayload.objects.all()
+        if company:
+            qs = qs.filter(endpoint__company=company)
+        return qs
 
 
 @method_decorator(csrf_exempt, name='dispatch')

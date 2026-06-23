@@ -51,7 +51,15 @@ class NotificationService:
 
     @staticmethod
     def create_reminder(*, company, recipient, title, message, due_at, reminder_type='generic', lead=None):
-        return Reminder.objects.create(company=company, recipient=recipient, title=title, message=message, due_at=due_at, reminder_type=reminder_type, lead=lead)
+        reminder = Reminder.objects.create(company=company, recipient=recipient, title=title, message=message, due_at=due_at, reminder_type=reminder_type, lead=lead)
+        from apps.audit.services.audit import AuditService
+        AuditService.log(
+            company=company,
+            action='reminder.created',
+            obj=reminder,
+            metadata={'recipient_id': str(recipient.pk) if recipient else None, 'due_at': due_at.isoformat() if hasattr(due_at, 'isoformat') else str(due_at)}
+        )
+        return reminder
 
 
 class EmailOutboxService:
@@ -91,5 +99,14 @@ class ReminderService:
             reminder.status = 'sent'
             reminder.sent_at = now
             reminder.save(update_fields=['status', 'sent_at', 'updated_at'])
+            
+            from apps.audit.services.audit import AuditService
+            AuditService.log(
+                company=reminder.company,
+                action='reminder.sent',
+                obj=reminder,
+                actor_type='system',
+                metadata={'recipient_id': str(reminder.recipient.pk) if reminder.recipient else None}
+            )
             count += 1
         return count

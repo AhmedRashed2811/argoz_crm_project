@@ -1,0 +1,57 @@
+{% extends 'base.html' %}
+{% block page_title %}Manual Distribution Queue{% endblock %}
+{% block content %}
+<div class="card">
+    <div class="toolbar">
+        <div>
+            <h2 class="card-title">Manual Distribution Queue</h2>
+            <div class="card-subtitle">Pending requests created due to SLA breaches or reassignment rules.</div>
+        </div>
+    </div>
+</div>
+<div class="card">
+    <div class="table-wrap">
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Lead</th>
+                    <th>Original Owner</th>
+                    <th>Created At</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for req in requests %}
+                <tr>
+                    <td>
+                        <strong>{{ req.lead.full_name }}</strong>
+                        <div class="small muted">{{ req.lead.phone_country_code }} {{ req.lead.phone_number }}</div>
+                    </td>
+                    <td>
+                        {% if req.original_salesman %}
+                            {{ req.original_salesman.email }}
+                        {% elif req.original_team %}
+                            {{ req.original_team.name }}
+                        {% else %}
+                            —
+                        {% endif %}
+                    </td>
+                    <td>{{ req.created_at|date:"Y-m-d H:i" }}</td>
+                    <td><span class="badge warning">{{ req.status }}</span></td>
+                    <td>
+                        <a class="btn btn-soft btn-sm" href="{% url 'distribution:detail' req.pk %}">Process</a>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="5">
+                        <div class="empty-state">No pending manual distribution requests.</div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

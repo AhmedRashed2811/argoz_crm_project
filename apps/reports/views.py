@@ -1,4 +1,5 @@
 from django.contrib.auth.mixins import LoginRequiredMixin
+from apps.permissions_engine.mixins import CRMPermissionRequiredMixin
 from django.utils import timezone
 from django.views.generic import TemplateView
 from apps.leads.selectors import (
@@ -32,12 +33,14 @@ from apps.marketing.selectors import (
 )
 
 
-class ExecutiveReportView(LoginRequiredMixin, TemplateView):
+class ExecutiveReportView(LoginRequiredMixin, CRMPermissionRequiredMixin, TemplateView):
     template_name = 'reports/executive_dashboard.html'
+    permission_required = 'leads.view_lead'
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
-        company = self.request.user.company
+        user = self.request.user
+        company = user.company if not user.is_superuser else None
         now = timezone.now()
 
         # Lead pipeline summary
@@ -68,12 +71,14 @@ class ExecutiveReportView(LoginRequiredMixin, TemplateView):
         return ctx
 
 
-class SalesReportView(LoginRequiredMixin, TemplateView):
+class SalesReportView(LoginRequiredMixin, CRMPermissionRequiredMixin, TemplateView):
     template_name = 'reports/sales_dashboard.html'
+    permission_required = 'leads.view_lead'
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
-        company = self.request.user.company
+        user = self.request.user
+        company = user.company if not user.is_superuser else None
         now = timezone.now()
 
         # Per-salesman performance
@@ -103,12 +108,14 @@ class SalesReportView(LoginRequiredMixin, TemplateView):
         return ctx
 
 
-class MarketingReportView(LoginRequiredMixin, TemplateView):
+class MarketingReportView(LoginRequiredMixin, CRMPermissionRequiredMixin, TemplateView):
     template_name = 'reports/marketing_dashboard.html'
+    permission_required = 'marketing.view_campaign_roi'
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
-        company = self.request.user.company
+        user = self.request.user
+        company = user.company if not user.is_superuser else None
 
         # Refresh metrics for active campaigns to guarantee accuracy
         from apps.marketing.services.roi_service import ROIService
@@ -137,12 +144,14 @@ class MarketingReportView(LoginRequiredMixin, TemplateView):
         return ctx
 
 
-class FinanceReportView(LoginRequiredMixin, TemplateView):
+class FinanceReportView(LoginRequiredMixin, CRMPermissionRequiredMixin, TemplateView):
     template_name = 'reports/finance_dashboard.html'
+    permission_required = 'finance.approve_campaign'
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
-        company = self.request.user.company
+        user = self.request.user
+        company = user.company if not user.is_superuser else None
 
         # Budget summary by approval status
         ctx['budget_by_approval'] = get_budget_by_approval(company)

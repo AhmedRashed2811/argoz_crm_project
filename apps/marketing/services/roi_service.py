@@ -56,6 +56,30 @@ class ROIService:
             )
         else:
             CampaignKPIResult.objects.filter(campaign=campaign, metric_code__in=['attendees', 'cost_per_attendee']).delete()
+
+        # Calculate campaign-level event attendance KPI metrics
+        kpi_target = sum(event.target_attendees or 0 for event in campaign.events.all())
+        kpi_actual = total_attendees
+        kpi_achievement_pct = Decimal('0.00')
+        if kpi_target > 0:
+            kpi_achievement_pct = (Decimal(kpi_actual) / Decimal(kpi_target) * Decimal('100')).quantize(Decimal('0.01'))
+
+        CampaignKPIResult.objects.update_or_create(
+            campaign=campaign,
+            metric_code='kpi_target',
+            defaults={'metric_value': Decimal(kpi_target)},
+        )
+        CampaignKPIResult.objects.update_or_create(
+            campaign=campaign,
+            metric_code='kpi_actual',
+            defaults={'metric_value': Decimal(kpi_actual)},
+        )
+        CampaignKPIResult.objects.update_or_create(
+            campaign=campaign,
+            metric_code='kpi_achievement_pct',
+            defaults={'metric_value': kpi_achievement_pct},
+        )
+
         return total_attendees, cpa
 
     @staticmethod

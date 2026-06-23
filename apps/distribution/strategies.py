@@ -200,6 +200,10 @@ class RetryTeamEscalationStrategy(ByTurnSequentialStrategy):
 
     @transaction.atomic
     def assign(self, *, lead, actor=None, scope_mode='team_then_salesman', team=None, language=None, **kwargs):
+        from apps.leads.models import Lead
+        # Acquire row lock on lead to prevent concurrency race conditions during retry cycle updates
+        lead = Lead.objects.select_for_update().get(pk=lead.pk)
+        
         from apps.core.services.policies import PolicyResolver
         from apps.distribution.selectors import get_last_assignment_attempt
         

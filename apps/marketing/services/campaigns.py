@@ -86,11 +86,57 @@ class CampaignValidationService:
         return True
 
     @classmethod
+    def validate_assets(cls, campaign: Campaign):
+        for event in campaign.events.all():
+            if event.campaign != campaign:
+                raise ValueError("Event does not belong to the correct campaign.")
+            for celeb in event.celebrities.all():
+                if celeb.event.campaign != campaign:
+                    raise ValueError("Event Celebrity does not belong to the correct campaign.")
+            for giveaway in event.giveaways.all():
+                if giveaway.event.campaign != campaign:
+                    raise ValueError("Event Giveaway does not belong to the correct campaign.")
+            for catering in event.catering_items.all():
+                if catering.event.campaign != campaign:
+                    raise ValueError("Event Catering does not belong to the correct campaign.")
+        for tv in campaign.tv_ads.all():
+            if tv.campaign != campaign:
+                raise ValueError("TV Ad does not belong to the correct campaign.")
+            for ch in tv.channels.all():
+                if ch.tv_ad.campaign != campaign:
+                    raise ValueError("TV Ad Channel does not belong to the correct campaign.")
+            for slot in tv.slots.all():
+                if slot.tv_ad.campaign != campaign:
+                    raise ValueError("TV Ad Slot does not belong to the correct campaign.")
+        for st in campaign.street_ads.all():
+            if st.campaign != campaign:
+                raise ValueError("Street Ad does not belong to the correct campaign.")
+            for line in st.type_lines.all():
+                if line.street_ad.campaign != campaign:
+                    raise ValueError("Street Ad Type Line does not belong to the correct campaign.")
+                for loc in line.locations.all():
+                    if loc.type_line.street_ad.campaign != campaign:
+                        raise ValueError("Street Ad Location does not belong to the correct campaign.")
+        for ex in campaign.exhibitions.all():
+            if ex.campaign != campaign:
+                raise ValueError("Exhibition does not belong to the correct campaign.")
+        for ad in campaign.social_ads.all():
+            if ad.campaign != campaign:
+                raise ValueError("Social Ad does not belong to the correct campaign.")
+            if ad.linked_event and ad.linked_event.campaign != campaign:
+                raise ValueError(f"Social Media Ad '{ad.name}' is linked to an Event '{ad.linked_event.event_name}' from a different campaign.")
+            for line in ad.platform_lines.all():
+                if line.social_ad.campaign != campaign:
+                    raise ValueError("Social Ad Platform Line does not belong to the correct campaign.")
+        return True
+
+    @classmethod
     def validate_for_submission(cls, campaign: Campaign):
         cls.validate_master(campaign)
         cls.validate_has_type_selection(campaign)
         cls.validate_child_dates(campaign)
         cls.validate_budgets(campaign)
+        cls.validate_assets(campaign)
         return True
 
 

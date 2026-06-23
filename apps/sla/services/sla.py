@@ -43,8 +43,48 @@ class SLAService:
     def start_for_lead(cls, lead, assignment=None):
         """Start a new SLA instance for the lead and create associated reminders."""
         definition = cls.resolve_definition(lead)
-        if not definition or not lead.current_stage:
-            return None
+        if not definition:
+            if not lead.current_stage:
+                return None
+            
+            # Dynamically resolve duration using PolicyResolver, fall back to sla_default_config or 1 hour
+            stage_code = lead.current_stage.code if lead.current_stage else 'fresh'
+            sla_config = PolicyResolver.get_stage_sla(lead.company, stage_code)
+            
+            duration_value = 1
+            duration_unit = 'hours'
+            reminder_config = {'minutes_before': [60, 30]}
+            breach_action = 'automatic_redistribution'
+            expiry_strategy_code = 'round_robin_load_balanced'
+            
+            if isinstance(sla_config, dict):
+                duration_value = sla_config.get('duration_value', sla_config.get('value', duration_value))
+                duration_unit = sla_config.get('duration_unit', sla_config.get('unit', duration_unit))
+                breach_action = sla_config.get('breach_action', breach_action)
+                expiry_strategy_code = sla_config.get('expiry_strategy_code', expiry_strategy_code)
+                reminder_config = sla_config.get('reminder_config', reminder_config)
+            elif isinstance(sla_config, (int, float)):
+                duration_value = int(sla_config)
+                duration_unit = 'minutes'
+                
+            if not duration_value:
+                duration_value = 1
+                duration_unit = 'hours'
+                
+            definition = SLADefinition(
+                company=lead.company,
+                stage=lead.current_stage,
+                source=lead.source,
+                origin=lead.origin,
+                duration_value=duration_value,
+                duration_unit=duration_unit,
+                breach_action=breach_action,
+                expiry_strategy_code=expiry_strategy_code,
+                reminder_config=reminder_config,
+                is_active=True
+            )
+            definition.is_fallback = True
+            
         starts_at = timezone.now()
         # A lead must have only one active SLA clock at a time.  New assignment
         # or stage SLA start cancels previous active clocks without deleting
@@ -61,7 +101,7 @@ class SLAService:
             starts_at=starts_at,
             due_at=due_at,
             policy_snapshot={
-                'definition_id': str(definition.id),
+                'definition_id': 'fallback' if getattr(definition, 'is_fallback', False) else (str(definition.id) if getattr(definition, 'id', None) else 'fallback'),
                 'duration_value': definition.duration_value,
                 'duration_unit': definition.duration_unit,
                 'breach_action': definition.breach_action,
@@ -260,6 +300,16 @@ class SLAService:
             action = 'sla.expired.redistributed'
         else:
             result = None
+            # Create a ManualDistributionRequest record in the database for the manual reassignment queue
+            from apps.distribution.models import ManualDistributionRequest
+            ManualDistributionRequest.objects.create(
+                company=lead.company,
+                lead=lead,
+                original_salesman=lead.current_salesman,
+                original_team=lead.current_team,
+                status='pending',
+            )
+            
             # Notify salesman and/or sales head for manual reassignment
             recipients = []
             if lead.current_salesman:

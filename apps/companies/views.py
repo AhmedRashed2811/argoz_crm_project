@@ -44,9 +44,10 @@ class CompanyUpdateView(LoginRequiredMixin, CRMPermissionRequiredMixin, UpdateVi
         return Company.objects.all()
 
 
-class BranchListView(LoginRequiredMixin, ListView):
+class BranchListView(LoginRequiredMixin, CRMPermissionRequiredMixin, ListView):
     model = Branch
     template_name = 'companies/branch_list.html'
+    permission_required = 'companies.manage_company_policy'
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -59,9 +60,10 @@ class BranchListView(LoginRequiredMixin, ListView):
         return qs
 
 
-class LanguageListView(LoginRequiredMixin, ListView):
+class LanguageListView(LoginRequiredMixin, CRMPermissionRequiredMixin, ListView):
     model = Language
     template_name = 'companies/language_list.html'
+    permission_required = 'companies.manage_company_policy'
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -74,12 +76,22 @@ class LanguageListView(LoginRequiredMixin, ListView):
         return qs
 
 
-class PolicyConsoleView(LoginRequiredMixin, TemplateView):
+class PolicyConsoleView(LoginRequiredMixin, CRMPermissionRequiredMixin, TemplateView):
     template_name = 'companies/policy_console.html'
+    permission_required = 'companies.manage_company_policy'
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
-        company = self.request.user.company or Company.objects.first()
+        user = self.request.user
+        if not user.is_superuser:
+            company = user.company
+            if not company:
+                from django.http import Http404
+                raise Http404("Company not found or access denied.")
+        else:
+            company_id = self.request.GET.get('company')
+            company = Company.objects.filter(pk=company_id).first() if company_id else user.company or Company.objects.first()
+
         ctx['company'] = company
         ctx['policies'] = CompanyPolicy.objects.select_related('policy_definition','selected_option').filter(company=company) if company else []
         ctx['definitions'] = PolicyDefinition.objects.prefetch_related('options').all()
@@ -87,7 +99,16 @@ class PolicyConsoleView(LoginRequiredMixin, TemplateView):
 
     @transaction.atomic
     def post(self, request):
-        company = request.user.company or Company.objects.first()
+        user = self.request.user
+        if not user.is_superuser:
+            company = user.company
+            if not company:
+                from django.http import Http404
+                raise Http404("Company not found or access denied.")
+        else:
+            company_id = request.POST.get('company')
+            company = Company.objects.filter(pk=company_id).first() if company_id else user.company or Company.objects.first()
+
         from apps.core.models import PolicyChangeHistory
         from apps.audit.services.audit import AuditService
         

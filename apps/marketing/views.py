@@ -130,8 +130,12 @@ class CampaignCreateView(LoginRequiredMixin, CRMPermissionRequiredMixin, View):
             return render(request, self.template_name, self.get_context())
 
     def get_context(self):
+        user = self.request.user
+        companies = Company.objects.all()
+        if not user.is_superuser:
+            companies = companies.filter(pk=user.company_id)
         return {
-            'companies': Company.objects.all(),
+            'companies': companies,
             'target_choices': Campaign.TARGET_CHOICES,
             'campaign_type_choices': CampaignTypeSelection.TYPE_CHOICES,
             'ad_type_choices': StreetAdTypeLine.AD_TYPE_CHOICES,
@@ -141,6 +145,10 @@ class CampaignCreateView(LoginRequiredMixin, CRMPermissionRequiredMixin, View):
 
     def _resolve_company(self, request):
         company_id = request.POST.get('company')
+        if not request.user.is_superuser:
+            if company_id and str(company_id) != str(request.user.company_id):
+                raise ValueError("You are not authorized to create campaigns for another company.")
+            return request.user.company
         if company_id:
             return Company.objects.get(pk=company_id)
         if request.user.company_id:

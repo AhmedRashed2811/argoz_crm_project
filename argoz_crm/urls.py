@@ -17,6 +17,7 @@ urlpatterns = [
     path('notifications/', include('apps.notifications.urls')),
     path('reports/', include('apps.reports.urls')),
     path('sla/', include('apps.sla.urls')),
+    path('distribution/', include('apps.distribution.urls')),
 ]
 
 if settings.DEBUG:
