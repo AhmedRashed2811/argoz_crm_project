@@ -31,6 +31,8 @@ def get_leads_list(company, search_query=None, stage_id=None, source_id=None, st
             return qs.distinct()
         if PermissionEngine.has_perm(user, 'leads.view_team'):
             return qs.filter(current_team__memberships__user=user).distinct()
+        if hasattr(user, 'broker_profile') and user.broker_profile.is_active:
+            return qs.filter(broker=user.broker_profile).distinct()
         return qs.filter(current_salesman=user).distinct()
         
     return qs.distinct()
@@ -86,8 +88,8 @@ def get_teams(company):
 def get_salesmen(company):
     """Retrieves active salesmen scoped to a company."""
     if company:
-        return User.objects.filter(company=company, is_active=True)
-    return User.objects.filter(is_active=True)
+        return User.objects.filter(company=company, is_active=True, sales_profile__isnull=False)
+    return User.objects.filter(is_active=True, sales_profile__isnull=False)
 
 def get_duplicate_lead_for_existing_client(company, existing_phone, exclude_lead_id=None):
     """Checks for duplicate lead for existing client phone."""

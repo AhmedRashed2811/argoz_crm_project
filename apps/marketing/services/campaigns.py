@@ -1,6 +1,23 @@
 from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
+from django.utils.dateparse import parse_date, parse_time
+
+def as_decimal(value, default='0'):
+    try:
+        from decimal import Decimal, InvalidOperation
+        return Decimal(str(value or default).replace(',', ''))
+    except (InvalidOperation, ValueError):
+        return Decimal(default)
+
+def as_int(value, default=0):
+    try:
+        return int(value or default)
+    except ValueError:
+        return default
+
+def list_at(values, index, default=''):
+    return values[index] if index < len(values) else default
 from apps.core.services.policies import PolicyResolver
 from apps.marketing.models import (
     Campaign, CampaignTypeSelection, CampaignEvent, EventCelebrity, EventGiveaway, EventCatering,
@@ -367,7 +384,7 @@ class CampaignCreationService:
             end_date=data.get('end_date'),
             target_type=data.get('target_type') or 'other',
             created_by_user=user,
-            approval_status='draft',
+            approval_status=data.get('approval_status') or 'draft',
         )
 
         campaign_types = data.get('campaign_types', [])
@@ -500,6 +517,9 @@ class CampaignCreationService:
 
         CampaignBudgetService.refresh_total(campaign, actor=user)
 
+        if campaign.approval_status != 'draft':
+            CampaignValidationService.validate_has_type_selection(campaign)
+
         AuditService.log(
             company=campaign.company,
             actor=user,
@@ -508,3 +528,160 @@ class CampaignCreationService:
             after={'name': campaign.name, 'target_type': campaign.target_type}
         )
         return campaign
+
+    @classmethod
+    @transaction.atomic
+    def create_campaign_from_post(cls, company, user, post_data):
+        selected = post_data.getlist('campaign_types')
+
+        events_payload = []
+        if 'events' in selected:
+            names = post_data.getlist('event_name[]')
+            for i, name in enumerate(names):
+                if not name.strip():
+                    continue
+                celebrities = []
+                for cname, cbudget in zip(post_data.getlist(f'event_celebrity_name_{i}[]'), post_data.getlist(f'event_celebrity_budget_{i}[]')):
+                    if cname.strip():
+                        celebrities.append({'name': cname.strip(), 'budget': as_decimal(cbudget)})
+                giveaways = []
+                for gname, gbudget in zip(post_data.getlist(f'event_giveaway_name_{i}[]'), post_data.getlist(f'event_giveaway_budget_{i}[]')):
+                    if gname.strip():
+                        giveaways.append({'name': gname.strip(), 'budget': as_decimal(gbudget)})
+                catering = []
+                for cname, cbudget in zip(post_data.getlist(f'event_catering_name_{i}[]'), post_data.getlist(f'event_catering_budget_{i}[]')):
+                    if cname.strip():
+                        catering.append({'name': cname.strip(), 'budget': as_decimal(cbudget)})
+
+                events_payload.append({
+                    'event_name': name.strip(),
+                    'venue_place': list_at(post_data.getlist('event_venue[]'), i),
+                    'event_date': parse_date(list_at(post_data.getlist('event_date[]'), i)),
+                    'budget': as_decimal(list_at(post_data.getlist('event_budget[]'), i, '0')),
+                    'target_attendees': as_int(list_at(post_data.getlist('event_attendees[]'), i, '0')) or None,
+                    'description': list_at(post_data.getlist('event_description[]'), i),
+                    'celebrities': celebrities,
+                    'giveaways': giveaways,
+                    'catering': catering,
+                })
+
+        tv_payload = []
+        if 'tv_ads' in selected:
+            names = post_data.getlist('tv_name[]')
+            for i, name in enumerate(names):
+                if not name.strip():
+                    continue
+                channels = []
+                for ch, budget in zip(post_data.getlist(f'tv_channel_name_{i}[]'), post_data.getlist(f'tv_channel_budget_{i}[]')):
+                    if ch.strip():
+                        channels.append({'channel_name': ch.strip(), 'channel_budget': as_decimal(budget)})
+                slots = []
+                for t, n in zip(post_data.getlist(f'tv_slot_time_{i}[]'), post_data.getlist(f'tv_slot_count_{i}[]')):
+                    if t:
+                        slots.append({'appearance_time': parse_time(t), 'number_of_appearances': as_int(n, 1) or 1})
+                tv_payload.append({
+                    'name': name.strip(),
+                    'start_date': parse_date(list_at(post_data.getlist('tv_start_date[]'), i)),
+                    'end_date': parse_date(list_at(post_data.getlist('tv_end_date[]'), i)),
+                    'budget': as_decimal(list_at(post_data.getlist('tv_budget[]'), i, '0')),
+                    'description': list_at(post_data.getlist('tv_description[]'), i),
+                    'channels': channels,
+                    'slots': slots,
+                })
+
+        street_payload = []
+        if 'street_ads' in selected:
+            names = post_data.getlist('street_name[]')
+            for i, name in enumerate(names):
+                if not name.strip():
+                    continue
+                type_lines = []
+                types = post_data.getlist(f'street_type_{i}[]')
+                numbers = post_data.getlist(f'street_type_number_{i}[]')
+                budgets = post_data.getlist(f'street_type_budget_{i}[]')
+                locations = post_data.getlist(f'street_type_location_{i}[]')
+                location_budgets = post_data.getlist(f'street_type_location_budget_{i}[]')
+                for j, ad_type in enumerate(types):
+                    if not ad_type:
+                        continue
+                    type_lines.append({
+                        'ad_type': ad_type,
+                        'total_number': as_int(numbers[j] if j < len(numbers) else 1, 1),
+                        'budget': as_decimal(budgets[j] if j < len(budgets) else 0),
+                        'location': locations[j] if j < len(locations) else '',
+                        'location_budget': as_decimal(location_budgets[j] if j < len(location_budgets) else 0),
+                    })
+                street_payload.append({
+                    'name': name.strip(),
+                    'start_date': parse_date(list_at(post_data.getlist('street_start_date[]'), i)),
+                    'end_date': parse_date(list_at(post_data.getlist('street_end_date[]'), i)),
+                    'budget': as_decimal(list_at(post_data.getlist('street_budget[]'), i, '0')),
+                    'description': list_at(post_data.getlist('street_description[]'), i),
+                    'type_lines': type_lines,
+                })
+
+        exhibition_payload = []
+        if 'exhibition' in selected:
+            names = post_data.getlist('exhibition_name[]')
+            for i, name in enumerate(names):
+                if not name.strip():
+                    continue
+                exhibition_payload.append({
+                    'name': name.strip(),
+                    'place': list_at(post_data.getlist('exhibition_place[]'), i),
+                    'start_date': parse_date(list_at(post_data.getlist('exhibition_start_date[]'), i)),
+                    'end_date': parse_date(list_at(post_data.getlist('exhibition_end_date[]'), i)),
+                    'budget': as_decimal(list_at(post_data.getlist('exhibition_budget[]'), i, '0')),
+                })
+
+        social_payload = []
+        if 'social_media' in selected:
+            names = post_data.getlist('social_name[]')
+            for i, name in enumerate(names):
+                if not name.strip():
+                    continue
+                platforms = []
+                plat_names = post_data.getlist(f'social_platform_{i}[]')
+                plat_budgets = post_data.getlist(f'social_platform_budget_{i}[]')
+                plat_targets = post_data.getlist(f'social_platform_target_{i}[]')
+                for j, platform in enumerate(plat_names):
+                    if platform:
+                        platforms.append({
+                            'platform': platform,
+                            'budget': as_decimal(plat_budgets[j] if j < len(plat_budgets) else 0),
+                            'target_value': as_decimal(plat_targets[j] if j < len(plat_targets) else 0),
+                        })
+                social_payload.append({
+                    'name': name.strip(),
+                    'target_kpi': list_at(post_data.getlist('social_target_kpi[]'), i),
+                    'description': list_at(post_data.getlist('social_description[]'), i),
+                    'platforms': platforms,
+                })
+
+        other_payload = []
+        values = post_data.getlist('other_cost_value[]')
+        reasons = post_data.getlist('other_cost_reason[]')
+        for i, value in enumerate(values):
+            reason = reasons[i] if i < len(reasons) else ''
+            if value or reason.strip():
+                other_payload.append({
+                    'value': as_decimal(value) if value else None,
+                    'reason': reason.strip(),
+                })
+
+        payload = {
+            'name': post_data.get('name', '').strip(),
+            'description': post_data.get('description', '').strip(),
+            'start_date': parse_date(post_data.get('start_date')),
+            'end_date': parse_date(post_data.get('end_date')),
+            'target_type': post_data.get('target_type') or 'other',
+            'campaign_types': selected,
+            'events': events_payload,
+            'tv_ads': tv_payload,
+            'street_ads': street_payload,
+            'exhibitions': exhibition_payload,
+            'social_ads': social_payload,
+            'other_costs': other_payload,
+        }
+
+        return cls.create_campaign(company=company, user=user, data=payload)

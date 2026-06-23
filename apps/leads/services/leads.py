@@ -331,13 +331,19 @@ class LeadService:
             salesman = User.objects.filter(pk=salesman).first()
 
         if salesman:
+            # Check if salesman has a SalesProfile
+            if not SalesProfile.objects.filter(user=salesman, company=lead.company, is_available=True).exists():
+                salesman = None
+
+        if salesman:
             # We are assigning to an explicit company salesman
             result = LeadService.assign_lead(lead=lead, actor=None, strategy_code='manual_assignment',
                                            salesman=salesman, team=team or metadata.get('team'))
+            lead.assignments.filter(is_current=True).update(assignment_type='broker')
             AuditService.log(company=lead.company, actor=actor, action='lead.broker_to_sales_assigned', obj=lead)
             return result
 
-        if broker_mode == 'assign_salesman':
+        if broker_mode in ('assign_salesman', 'broker_and_sales'):
             # Run auto-distribution
             result = LeadService.assign_lead(lead=lead, actor=None)
             AuditService.log(company=lead.company, actor=actor, action='lead.broker_to_sales_assigned', obj=lead)
@@ -346,10 +352,12 @@ class LeadService:
         # If broker user has a SalesProfile, assign them as salesman
         if has_sales_profile and broker_user:
             result = LeadService.assign_lead(lead=lead, actor=None, strategy_code='manual_assignment', salesman=broker_user)
+            lead.assignments.filter(is_current=True).update(assignment_type='broker')
             return result
 
         # Otherwise, remain with broker only - just mark as assigned, salesman=None
         result = LeadService.assign_lead(lead=lead, actor=None, strategy_code='manual_assignment', salesman=None)
+        lead.assignments.filter(is_current=True).update(assignment_type='broker')
         return result
 
     @staticmethod
@@ -471,27 +479,28 @@ class LeadService:
 
         # 3. Create follow-up / meeting / frozen records if passed
         if new_stage.code in ('follow_up', 'followup') and kwargs.get('due_at'):
-            from apps.leads.models import LeadFollowUp
-            lead.followups.filter(status='pending').update(status='cancelled')
-            LeadFollowUp.objects.create(
+            for fu in lead.followups.filter(status='pending'):
+                FollowUpService.cancel_followup(followup=fu, actor=actor)
+            FollowUpService.schedule_followup(
                 lead=lead,
-                assigned_to=lead.current_salesman or actor,
+                actor=actor,
                 due_at=kwargs.get('due_at'),
-                status='pending',
-                notes=reason
+                reminder_at=kwargs.get('reminder_at') or None,
+                notes=reason,
+                assigned_to=lead.current_salesman or actor,
             )
             
         if new_stage.code == 'meeting' and kwargs.get('scheduled_at'):
-            from apps.leads.models import Meeting
-            lead.meetings.filter(status='scheduled').update(status='cancelled')
-            Meeting.objects.create(
+            for mt in lead.meetings.filter(status='scheduled'):
+                MeetingService.cancel_meeting(meeting=mt, actor=actor)
+            MeetingService.schedule_meeting(
                 lead=lead,
-                assigned_to=lead.current_salesman or actor,
+                actor=actor,
                 scheduled_at=kwargs.get('scheduled_at'),
                 location=kwargs.get('location', ''),
                 meeting_type=kwargs.get('meeting_type', 'office'),
-                status='scheduled',
-                notes=reason
+                notes=reason,
+                assigned_to=lead.current_salesman or actor,
             )
             
         if new_stage.code == 'frozen' and kwargs.get('freeze_end'):
@@ -513,13 +522,14 @@ class LeadService:
             mode = PolicyResolver.get_code(lead.company, 'reminder_mode_not_reached', 'automatic')
             if mode == 'automatic' and lead.current_salesman:
                 due_at = timezone.now() + timedelta(hours=2)
-                from apps.leads.models import LeadFollowUp
-                LeadFollowUp.objects.create(
+                for fu in lead.followups.filter(status='pending'):
+                    FollowUpService.cancel_followup(followup=fu, actor=actor)
+                FollowUpService.schedule_followup(
                     lead=lead,
-                    assigned_to=lead.current_salesman,
+                    actor=actor,
                     due_at=due_at,
-                    status='pending',
-                    notes="Automatic follow-up scheduled for Not Reached stage."
+                    notes="Automatic follow-up scheduled for Not Reached stage.",
+                    assigned_to=lead.current_salesman,
                 )
                 NotificationService.create_reminder(
                     company=lead.company,

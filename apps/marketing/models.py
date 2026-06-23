@@ -3,6 +3,7 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 from django.core.validators import MinValueValidator
+from django.core.exceptions import ValidationError
 from apps.core.models import UUIDBaseModel
 
 
@@ -44,6 +45,17 @@ class Campaign(UUIDBaseModel):
 
     def __str__(self):
         return self.name
+
+    def clean(self):
+        super().clean()
+        if self.total_budget is not None and self.total_budget < 0:
+            raise ValidationError({'total_budget': 'Campaign total budget must be non-negative.'})
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValidationError({'end_date': 'Campaign end date must be equal to or after the start date.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
 
     def update_lifecycle_status(self, save=True):
         today = timezone.localdate()
@@ -95,6 +107,15 @@ class CampaignEvent(UUIDBaseModel):
             models.CheckConstraint(check=models.Q(budget__gte=0), name='campaign_event_budget_non_negative'),
         ]
 
+    def clean(self):
+        super().clean()
+        if self.budget is not None and self.budget < 0:
+            raise ValidationError({'budget': 'Event budget must be non-negative.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.event_name
 
@@ -109,6 +130,15 @@ class EventCelebrity(UUIDBaseModel):
             models.CheckConstraint(check=models.Q(budget__gte=0), name='event_celebrity_budget_non_negative'),
         ]
 
+    def clean(self):
+        super().clean()
+        if self.budget is not None and self.budget < 0:
+            raise ValidationError({'budget': 'Celebrity budget must be non-negative.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
 
 class EventGiveaway(UUIDBaseModel):
     event = models.ForeignKey(CampaignEvent, on_delete=models.CASCADE, related_name='giveaways')
@@ -120,6 +150,15 @@ class EventGiveaway(UUIDBaseModel):
             models.CheckConstraint(check=models.Q(budget__gte=0), name='event_giveaway_budget_non_negative'),
         ]
 
+    def clean(self):
+        super().clean()
+        if self.budget is not None and self.budget < 0:
+            raise ValidationError({'budget': 'Giveaway budget must be non-negative.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
 
 class EventCatering(UUIDBaseModel):
     event = models.ForeignKey(CampaignEvent, on_delete=models.CASCADE, related_name='catering_items')
@@ -130,6 +169,15 @@ class EventCatering(UUIDBaseModel):
         constraints = [
             models.CheckConstraint(check=models.Q(budget__gte=0), name='event_catering_budget_non_negative'),
         ]
+
+    def clean(self):
+        super().clean()
+        if self.budget is not None and self.budget < 0:
+            raise ValidationError({'budget': 'Catering budget must be non-negative.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class TVAd(UUIDBaseModel):
@@ -145,6 +193,17 @@ class TVAd(UUIDBaseModel):
             models.CheckConstraint(check=models.Q(budget__gte=0), name='tv_ad_budget_non_negative'),
         ]
 
+    def clean(self):
+        super().clean()
+        if self.budget is not None and self.budget < 0:
+            raise ValidationError({'budget': 'TV Ad budget must be non-negative.'})
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValidationError({'end_date': 'TV Ad end date must be equal to or after start date.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
 
 class TVAdChannel(UUIDBaseModel):
     tv_ad = models.ForeignKey(TVAd, on_delete=models.CASCADE, related_name='channels')
@@ -156,6 +215,15 @@ class TVAdChannel(UUIDBaseModel):
         constraints = [
             models.CheckConstraint(check=models.Q(channel_budget__gte=0), name='tv_ad_channel_budget_non_negative'),
         ]
+
+    def clean(self):
+        super().clean()
+        if self.channel_budget is not None and self.channel_budget < 0:
+            raise ValidationError({'channel_budget': 'TV channel budget must be non-negative.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class TVAdSlot(UUIDBaseModel):
@@ -177,6 +245,17 @@ class StreetAd(UUIDBaseModel):
             models.CheckConstraint(check=models.Q(budget__gte=0), name='street_ad_budget_non_negative'),
         ]
 
+    def clean(self):
+        super().clean()
+        if self.budget is not None and self.budget < 0:
+            raise ValidationError({'budget': 'Street Ad budget must be non-negative.'})
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValidationError({'end_date': 'Street Ad end date must be equal to or after start date.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
 
 class StreetAdTypeLine(UUIDBaseModel):
     AD_TYPE_CHOICES = [
@@ -194,6 +273,15 @@ class StreetAdTypeLine(UUIDBaseModel):
             models.CheckConstraint(check=models.Q(budget__gte=0), name='street_ad_type_line_budget_non_negative'),
         ]
 
+    def clean(self):
+        super().clean()
+        if self.budget is not None and self.budget < 0:
+            raise ValidationError({'budget': 'Street ad type budget must be non-negative.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
 
 class StreetAdLocation(UUIDBaseModel):
     type_line = models.ForeignKey(StreetAdTypeLine, on_delete=models.CASCADE, related_name='locations')
@@ -204,6 +292,15 @@ class StreetAdLocation(UUIDBaseModel):
         constraints = [
             models.CheckConstraint(check=models.Q(budget__gte=0), name='street_ad_location_budget_non_negative'),
         ]
+
+    def clean(self):
+        super().clean()
+        if self.budget is not None and self.budget < 0:
+            raise ValidationError({'budget': 'Street ad location budget must be non-negative.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class ExhibitionRecord(UUIDBaseModel):
@@ -218,6 +315,17 @@ class ExhibitionRecord(UUIDBaseModel):
         constraints = [
             models.CheckConstraint(check=models.Q(budget__gte=0), name='exhibition_record_budget_non_negative'),
         ]
+
+    def clean(self):
+        super().clean()
+        if self.budget is not None and self.budget < 0:
+            raise ValidationError({'budget': 'Exhibition budget must be non-negative.'})
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValidationError({'end_date': 'Exhibition end date must be equal to or after start date.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class SocialMediaAd(UUIDBaseModel):
@@ -241,6 +349,15 @@ class SocialMediaPlatformLine(UUIDBaseModel):
             models.CheckConstraint(check=models.Q(budget__gte=0), name='social_media_platform_line_budget_non_negative'),
         ]
 
+    def clean(self):
+        super().clean()
+        if self.budget is not None and self.budget < 0:
+            raise ValidationError({'budget': 'Social platform budget must be non-negative.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
 
 class CampaignOtherCost(UUIDBaseModel):
     campaign = models.ForeignKey(Campaign, on_delete=models.CASCADE, related_name='other_costs')
@@ -252,6 +369,17 @@ class CampaignOtherCost(UUIDBaseModel):
         constraints = [
             models.CheckConstraint(check=models.Q(value__gte=0), name='campaign_other_cost_value_non_negative'),
         ]
+
+    def clean(self):
+        super().clean()
+        if self.value is not None and self.value < 0:
+            raise ValidationError({'value': 'Other cost value must be non-negative.'})
+        if self.value is not None and not str(self.reason or '').strip():
+            raise ValidationError({'reason': 'Reason is required when other cost value is set.'})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class CampaignApprovalHistory(UUIDBaseModel):

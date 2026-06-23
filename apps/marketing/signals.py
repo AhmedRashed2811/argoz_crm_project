@@ -9,29 +9,23 @@ from apps.marketing.services.campaigns import CampaignBudgetService
 
 def _refresh_campaign_budget(instance):
     campaign = None
-    try:
-        if isinstance(instance, Campaign):
-            campaign = instance
-        elif isinstance(instance, (CampaignEvent, TVAd, StreetAd, ExhibitionRecord, CampaignOtherCost)):
-            campaign = instance.campaign
-        elif isinstance(instance, (EventCelebrity, EventGiveaway, EventCatering)):
-            campaign = instance.event.campaign
-        elif isinstance(instance, TVAdChannel):
-            campaign = instance.tv_ad.campaign
-        elif isinstance(instance, StreetAdTypeLine):
-            campaign = instance.street_ad.campaign
-        elif isinstance(instance, StreetAdLocation):
-            campaign = instance.type_line.street_ad.campaign
-        elif isinstance(instance, SocialMediaPlatformLine):
-            campaign = instance.social_ad.campaign
-    except Exception:
-        pass
+    if isinstance(instance, Campaign):
+        campaign = instance
+    elif isinstance(instance, (CampaignEvent, TVAd, StreetAd, ExhibitionRecord, CampaignOtherCost)):
+        campaign = instance.campaign
+    elif isinstance(instance, (EventCelebrity, EventGiveaway, EventCatering)):
+        campaign = instance.event.campaign
+    elif isinstance(instance, TVAdChannel):
+        campaign = instance.tv_ad.campaign
+    elif isinstance(instance, StreetAdTypeLine):
+        campaign = instance.street_ad.campaign
+    elif isinstance(instance, StreetAdLocation):
+        campaign = instance.type_line.street_ad.campaign
+    elif isinstance(instance, SocialMediaPlatformLine):
+        campaign = instance.social_ad.campaign
 
     if campaign:
-        try:
-            CampaignBudgetService.refresh_total(campaign)
-        except Exception:
-            pass
+        CampaignBudgetService.refresh_total(campaign)
 
 @receiver(post_save, sender=CampaignEvent)
 @receiver(post_save, sender=EventCelebrity)

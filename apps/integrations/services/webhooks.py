@@ -145,7 +145,7 @@ class IncomingWebhookService:
                     
                     AuditService.log(
                         company=payload.endpoint.company,
-                        actor_type='webhook',
+                        actor_type='system',
                         action='webhook.payload_reprocessed',
                         obj=lead,
                         metadata={'payload_id': str(payload.id), 'retry_attempt': payload.retry_count}
@@ -164,7 +164,7 @@ class IncomingWebhookService:
                     
                     AuditService.log(
                         company=payload.endpoint.company,
-                        actor_type='webhook',
+                        actor_type='system',
                         action='webhook.payload_reprocess_failed',
                         obj=payload,
                         metadata={'error': str(exc), 'retry_attempt': payload.retry_count, 'next_retry_at': payload.next_retry_at.isoformat()}

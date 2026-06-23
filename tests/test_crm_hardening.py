@@ -10,7 +10,7 @@ from apps.permissions_engine.models import UserPermissionOverride
 from apps.sla.models import SLADefinition, LeadSLAInstance
 from apps.sla.services.sla import SLAService
 from apps.distribution.models import ManualDistributionRequest, AssignmentAttempt
-from apps.marketing.models import Campaign, CampaignEvent, SocialMediaAd, SocialMediaPlatformLine, CampaignKPIResult
+from apps.marketing.models import Campaign, CampaignEvent, SocialMediaAd, SocialMediaPlatformLine, CampaignKPIResult, CampaignOtherCost
 from apps.marketing.services.roi_service import ROIService
 from apps.marketing.services.campaigns import CampaignValidationService
 from apps.notifications.models import EmailOutbox, Reminder
@@ -374,3 +374,182 @@ class CRMHardeningTestCase(TestCase):
         self.assertEqual(payload.retry_count, 1)
         self.assertEqual(payload.processing_status, 'failed')
         self.assertIsNotNone(payload.next_retry_at)
+        
+        # Verify that scheduled webhook retry uses system actor_type
+        self.assertTrue(AuditLog.objects.filter(company=self.company_a, actor_type='system', action='webhook.payload_reprocess_failed').exists())
+
+    def test_broker_leads_view_filtering(self):
+        from apps.leads.selectors import get_leads_list, get_salesmen
+        from apps.accounts.models import BrokerProfile, SalesProfile
+        
+        # Create broker profile for user_a
+        broker_profile = BrokerProfile.objects.create(
+            user=self.user_a,
+            company=self.company_a,
+            broker_company_name='Broker A',
+            is_active=True
+        )
+        
+        # Lead owned by broker
+        lead_broker = Lead.objects.create(
+            company=self.company_a, full_name='Broker Lead A', phone_number='9999',
+            normalized_phone='9999', source=self.source_a, current_stage=self.stage_a,
+            broker=broker_profile
+        )
+        
+        # Lead not owned by broker
+        lead_other = Lead.objects.create(
+            company=self.company_a, full_name='Other Lead', phone_number='8888',
+            normalized_phone='8888', source=self.source_a, current_stage=self.stage_a
+        )
+        
+        # Get lead list for broker user (user_a)
+        qs = get_leads_list(company=self.company_a, user=self.user_a)
+        self.assertIn(lead_broker, qs)
+        self.assertNotIn(lead_other, qs)
+
+    def test_get_salesmen_excludes_non_salesmen(self):
+        from apps.leads.selectors import get_salesmen
+        from apps.accounts.models import SalesProfile
+        
+        # user_a has no SalesProfile, so get_salesmen should not return user_a
+        SalesProfile.objects.filter(user=self.user_a).delete()
+        salesmen = get_salesmen(self.company_a)
+        self.assertNotIn(self.user_a, salesmen)
+        
+        # Create SalesProfile for user_a
+        SalesProfile.objects.create(user=self.user_a, company=self.company_a, is_available=True)
+        salesmen = get_salesmen(self.company_a)
+        self.assertIn(self.user_a, salesmen)
+
+    def test_broker_assigns_only_to_sales_profile(self):
+        from apps.leads.services.leads import LeadService
+        from apps.accounts.models import BrokerProfile, SalesProfile
+        
+        # Create broker profile for user_a
+        broker_profile = BrokerProfile.objects.create(
+            user=self.user_a,
+            company=self.company_a,
+            broker_company_name='Broker A',
+            is_active=True
+        )
+        
+        # Create another user to assign to
+        user_c = User.objects.create_user(username='userc', email='userc@company-a.com', password='password123', company=self.company_a)
+        
+        # Ensure user_c does NOT have a SalesProfile
+        SalesProfile.objects.filter(user=user_c).delete()
+        
+        lead = Lead.objects.create(
+            company=self.company_a, full_name='Broker Lead C', phone_number='7777',
+            normalized_phone='7777', source=self.source_a, current_stage=self.stage_a,
+            origin='broker', broker=broker_profile
+        )
+        
+        # Try to assign manually to user_c (who has no SalesProfile)
+        LeadService.assign_lead_by_source(
+            lead=lead, actor=self.user_a, source_code='broker',
+            metadata={'broker_assign_mode': 'remain_broker', 'salesman': user_c}
+        )
+        
+        # Should fall back to salesman=None because user_c doesn't have a SalesProfile
+        self.assertIsNone(lead.current_salesman)
+
+    def test_stage_change_cancellation_calls_service(self):
+        from apps.leads.services.leads import LeadService, FollowUpService
+        from apps.leads.models import LeadFollowUp
+        
+        lead = Lead.objects.create(
+            company=self.company_a, full_name='Followup Lead', phone_number='6666',
+            normalized_phone='6666', source=self.source_a, current_stage=self.stage_a
+        )
+        
+        # Create a pending follow-up using service
+        self.grant_perm(self.user_a, 'leads.create_followup')
+        self.grant_perm(self.user_a, 'leads.change_stage')
+        
+        fu = FollowUpService.schedule_followup(
+            lead=lead, actor=self.user_a, due_at=timezone.now() + timezone.timedelta(days=1), notes='Initial'
+        )
+        
+        stage_followup = LeadStage.objects.create(company=self.company_a, code='followup', name='Followup Stage')
+        
+        # Change stage to follow-up (which should cancel the previous follow-up via service)
+        LeadService.change_stage(
+            lead=lead, new_stage=stage_followup, actor=self.user_a,
+            due_at=timezone.now() + timezone.timedelta(days=2), reason='Update'
+        )
+        
+        fu.refresh_from_db()
+        self.assertEqual(fu.status, 'cancelled')
+        # Check that audit log for follow-up cancellation exists
+        self.assertTrue(AuditLog.objects.filter(company=self.company_a, action='lead.followup_cancelled').exists())
+
+    def test_campaign_creation_validation_non_draft(self):
+        from apps.marketing.services.campaigns import CampaignCreationService
+        
+        data = {
+            'name': 'Active Campaign',
+            'description': 'Directly active',
+            'start_date': timezone.localdate(),
+            'end_date': timezone.localdate() + timezone.timedelta(days=10),
+            'target_type': 'other',
+            'approval_status': 'approved', # Non-draft status during creation
+            'campaign_types': [], # Empty campaign types!
+        }
+        
+        with self.assertRaises(ValueError):
+            CampaignCreationService.create_campaign(
+                company=self.company_a,
+                user=self.user_a,
+                data=data
+            )
+
+    def test_model_budget_constraints_save_clean(self):
+        from django.core.exceptions import ValidationError
+        campaign = Campaign.objects.create(
+            company=self.company_a, name='Model Protection Campaign',
+            start_date=timezone.localdate(), end_date=timezone.localdate() + timezone.timedelta(days=10)
+        )
+        
+        event = CampaignEvent(
+            campaign=campaign, event_name='Negative Event 2', venue_place='Venue',
+            event_date=timezone.localdate(), budget=Decimal('-50.00')
+        )
+        
+        # Saving event should raise ValidationError because clean() is run inside save()
+        with self.assertRaises(ValidationError):
+            event.save()
+
+    def test_campaign_other_cost_validation(self):
+        from django.core.exceptions import ValidationError
+        campaign = Campaign.objects.create(
+            company=self.company_a, name='Other Cost Protection Campaign',
+            start_date=timezone.localdate(), end_date=timezone.localdate() + timezone.timedelta(days=10)
+        )
+        
+        # Blank reason with set value
+        cost = CampaignOtherCost(
+            campaign=campaign, value=Decimal('100.00'), reason=''
+        )
+        
+        with self.assertRaises(ValidationError):
+            cost.save()
+
+    def test_budget_refresh_signal_propagates(self):
+        campaign = Campaign.objects.create(
+            company=self.company_a, name='Signal Prop Campaign',
+            start_date=timezone.localdate(), end_date=timezone.localdate() + timezone.timedelta(days=10)
+        )
+        
+        # Try to save a child object with negative budget, which triggers signals
+        from apps.marketing.models import CampaignEvent
+        event = CampaignEvent(
+            campaign=campaign, event_name='Neg Event 3', venue_place='Venue',
+            event_date=timezone.localdate(), budget=Decimal('-1.00')
+        )
+        
+        # Should raise ValidationError instead of swallowing it
+        from django.core.exceptions import ValidationError
+        with self.assertRaises(ValidationError):
+            event.save()
