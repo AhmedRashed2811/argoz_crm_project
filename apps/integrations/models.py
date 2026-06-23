@@ -78,6 +78,11 @@ class IncomingWebhookPayload(UUIDBaseModel):
     processed_lead = models.ForeignKey('leads.Lead', null=True, blank=True, on_delete=models.SET_NULL, related_name='webhook_payloads')
     received_at = models.DateTimeField(auto_now_add=True)
     processed_at = models.DateTimeField(null=True, blank=True)
+    
+    retry_count = models.PositiveIntegerField(default=0)
+    max_retry_count = models.PositiveIntegerField(default=3)
+    next_retry_at = models.DateTimeField(null=True, blank=True)
+    last_retry_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         unique_together = [('endpoint', 'idempotency_key')]

@@ -226,10 +226,14 @@ class SLAService:
         now = timezone.now()
         count = 0
         from apps.sla.selectors import get_expired_sla_instance_ids, get_sla_instance_for_update
+        from apps.sla.models import LeadSLAInstance
         ids = get_expired_sla_instance_ids(limit, now)
         for sla_id in ids:
             with transaction.atomic():
-                sla = get_sla_instance_for_update(sla_id)
+                try:
+                    sla = get_sla_instance_for_update(sla_id)
+                except LeadSLAInstance.DoesNotExist:
+                    continue
                 if sla.status != 'active' or sla.due_at > timezone.now():
                     continue
                 cls.process_single_expired_sla(sla)
@@ -326,7 +330,7 @@ class SLAService:
                     related_object=lead,
                     channels=['in_app', 'email'],
                 )
-            action = 'sla.expired.manual_required'
+            action = 'sla.expired.broker_manual_escalation' if lead.origin == 'broker' else 'sla.expired.manual_required'
 
         sla.status = 'processed'
         sla.processed_at = timezone.now()

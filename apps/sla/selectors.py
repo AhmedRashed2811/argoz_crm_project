@@ -35,12 +35,11 @@ def get_expired_sla_instance_ids(limit, now):
 
 def get_sla_instance_for_update(sla_id):
     """Retrieves single SLA instance with lock for processing."""
-    return (
-        LeadSLAInstance.objects
-        .select_for_update()
-        .select_related('lead', 'lead__company', 'lead__current_stage', 'lead__source')
-        .get(id=sla_id)
-    )
+    from django.db import connection
+    qs = LeadSLAInstance.objects.select_related('lead', 'lead__company', 'lead__current_stage', 'lead__source')
+    if connection.features.has_select_for_update_skip_locked:
+        return qs.select_for_update(skip_locked=True).get(id=sla_id)
+    return qs.select_for_update().get(id=sla_id)
 
 def get_sla_compliance_rate(company):
     """Calculates compliance rate percentage of satisfied SLAs."""

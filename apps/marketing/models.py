@@ -2,12 +2,13 @@ from decimal import Decimal
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
+from django.core.validators import MinValueValidator
 from apps.core.models import UUIDBaseModel
 
 
 class Campaign(UUIDBaseModel):
     TARGET_CHOICES = [('project', 'Project'), ('unit', 'Unit'), ('event', 'Event'), ('exhibition', 'Exhibition'), ('other', 'Other')]
-    APPROVAL_CHOICES = [('pending', 'Pending'), ('approved', 'Approved'), ('semi_approved', 'Semi Approved'), ('not_approved', 'Not Approved')]
+    APPROVAL_CHOICES = [('draft', 'Draft'), ('pending', 'Pending'), ('approved', 'Approved'), ('semi_approved', 'Semi Approved'), ('not_approved', 'Not Approved')]
     LIFECYCLE_CHOICES = [('coming', 'Coming'), ('active', 'Active'), ('ended', 'Ended')]
     company = models.ForeignKey('companies.Company', on_delete=models.CASCADE, related_name='campaigns')
     name = models.CharField(max_length=255)
@@ -16,8 +17,8 @@ class Campaign(UUIDBaseModel):
     end_date = models.DateField()
     target_type = models.CharField(max_length=30, choices=TARGET_CHOICES, default='other')
     target_object_id = models.UUIDField(null=True, blank=True)
-    total_budget = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
-    approval_status = models.CharField(max_length=30, choices=APPROVAL_CHOICES, default='pending')
+    total_budget = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'), validators=[MinValueValidator(Decimal('0.00'))])
+    approval_status = models.CharField(max_length=30, choices=APPROVAL_CHOICES, default='draft')
     lifecycle_status_cache = models.CharField(max_length=20, choices=LIFECYCLE_CHOICES, default='coming')
     created_by_user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='created_campaigns')
     is_archived = models.BooleanField(default=False)
@@ -83,7 +84,7 @@ class CampaignEvent(UUIDBaseModel):
     event_name = models.CharField(max_length=255)
     venue_place = models.CharField(max_length=255)
     event_date = models.DateField()
-    budget = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    budget = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'), validators=[MinValueValidator(Decimal('0.00'))])
     target_attendees = models.PositiveIntegerField(null=True, blank=True)
     actual_attendees = models.PositiveIntegerField(default=0)
     description = models.TextField(blank=True)
@@ -101,19 +102,34 @@ class CampaignEvent(UUIDBaseModel):
 class EventCelebrity(UUIDBaseModel):
     event = models.ForeignKey(CampaignEvent, on_delete=models.CASCADE, related_name='celebrities')
     name = models.CharField(max_length=255)
-    budget = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    budget = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'), validators=[MinValueValidator(Decimal('0.00'))])
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=models.Q(budget__gte=0), name='event_celebrity_budget_non_negative'),
+        ]
 
 
 class EventGiveaway(UUIDBaseModel):
     event = models.ForeignKey(CampaignEvent, on_delete=models.CASCADE, related_name='giveaways')
     name = models.CharField(max_length=255)
-    budget = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    budget = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'), validators=[MinValueValidator(Decimal('0.00'))])
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=models.Q(budget__gte=0), name='event_giveaway_budget_non_negative'),
+        ]
 
 
 class EventCatering(UUIDBaseModel):
     event = models.ForeignKey(CampaignEvent, on_delete=models.CASCADE, related_name='catering_items')
     name = models.CharField(max_length=255)
-    budget = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    budget = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'), validators=[MinValueValidator(Decimal('0.00'))])
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=models.Q(budget__gte=0), name='event_catering_budget_non_negative'),
+        ]
 
 
 class TVAd(UUIDBaseModel):
@@ -121,15 +137,25 @@ class TVAd(UUIDBaseModel):
     name = models.CharField(max_length=255)
     start_date = models.DateField()
     end_date = models.DateField()
-    budget = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    budget = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'), validators=[MinValueValidator(Decimal('0.00'))])
     description = models.TextField(blank=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=models.Q(budget__gte=0), name='tv_ad_budget_non_negative'),
+        ]
 
 
 class TVAdChannel(UUIDBaseModel):
     tv_ad = models.ForeignKey(TVAd, on_delete=models.CASCADE, related_name='channels')
     channel_name = models.CharField(max_length=255)
-    channel_budget = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    channel_budget = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'), validators=[MinValueValidator(Decimal('0.00'))])
     assets = models.ManyToManyField(CampaignAsset, blank=True, related_name='tv_channels')
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=models.Q(channel_budget__gte=0), name='tv_ad_channel_budget_non_negative'),
+        ]
 
 
 class TVAdSlot(UUIDBaseModel):
@@ -143,8 +169,13 @@ class StreetAd(UUIDBaseModel):
     name = models.CharField(max_length=255)
     start_date = models.DateField()
     end_date = models.DateField()
-    budget = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    budget = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'), validators=[MinValueValidator(Decimal('0.00'))])
     description = models.TextField(blank=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=models.Q(budget__gte=0), name='street_ad_budget_non_negative'),
+        ]
 
 
 class StreetAdTypeLine(UUIDBaseModel):
@@ -156,13 +187,23 @@ class StreetAdTypeLine(UUIDBaseModel):
     street_ad = models.ForeignKey(StreetAd, on_delete=models.CASCADE, related_name='type_lines')
     ad_type = models.CharField(max_length=40, choices=AD_TYPE_CHOICES)
     total_number = models.PositiveIntegerField(default=1)
-    budget = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    budget = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'), validators=[MinValueValidator(Decimal('0.00'))])
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=models.Q(budget__gte=0), name='street_ad_type_line_budget_non_negative'),
+        ]
 
 
 class StreetAdLocation(UUIDBaseModel):
     type_line = models.ForeignKey(StreetAdTypeLine, on_delete=models.CASCADE, related_name='locations')
     location = models.TextField()
-    budget = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    budget = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'), validators=[MinValueValidator(Decimal('0.00'))])
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=models.Q(budget__gte=0), name='street_ad_location_budget_non_negative'),
+        ]
 
 
 class ExhibitionRecord(UUIDBaseModel):
@@ -171,7 +212,12 @@ class ExhibitionRecord(UUIDBaseModel):
     place = models.CharField(max_length=255)
     start_date = models.DateField()
     end_date = models.DateField()
-    budget = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    budget = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'), validators=[MinValueValidator(Decimal('0.00'))])
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=models.Q(budget__gte=0), name='exhibition_record_budget_non_negative'),
+        ]
 
 
 class SocialMediaAd(UUIDBaseModel):
@@ -186,16 +232,26 @@ class SocialMediaPlatformLine(UUIDBaseModel):
     PLATFORM_CHOICES = [('meta', 'Meta'), ('facebook', 'Facebook'), ('instagram', 'Instagram'), ('whatsapp', 'WhatsApp'), ('tiktok', 'TikTok'), ('linkedin', 'LinkedIn'), ('x', 'X'), ('google_ads', 'Google Ads'), ('website', 'Website')]
     social_ad = models.ForeignKey(SocialMediaAd, on_delete=models.CASCADE, related_name='platform_lines')
     platform = models.CharField(max_length=40, choices=PLATFORM_CHOICES)
-    budget = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    budget = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'), validators=[MinValueValidator(Decimal('0.00'))])
     target_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     creative_assets = models.ManyToManyField(CampaignAsset, blank=True, related_name='social_platforms')
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=models.Q(budget__gte=0), name='social_media_platform_line_budget_non_negative'),
+        ]
 
 
 class CampaignOtherCost(UUIDBaseModel):
     campaign = models.ForeignKey(Campaign, on_delete=models.CASCADE, related_name='other_costs')
-    value = models.DecimalField(max_digits=14, decimal_places=2)
+    value = models.DecimalField(max_digits=14, decimal_places=2, validators=[MinValueValidator(Decimal('0.00'))])
     reason = models.TextField()
     cost_created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='campaign_other_costs')
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=models.Q(value__gte=0), name='campaign_other_cost_value_non_negative'),
+        ]
 
 
 class CampaignApprovalHistory(UUIDBaseModel):

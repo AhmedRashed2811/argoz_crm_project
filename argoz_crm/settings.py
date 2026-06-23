@@ -140,6 +140,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.marketing.tasks.update_campaign_lifecycles_task',
         'schedule': 3600.0,
     },
+    'retry_failed_webhooks': {
+        'task': 'apps.integrations.tasks.retry_failed_webhooks',
+        'schedule': 600.0,
+    },
 }
 
 CHANNEL_LAYERS = {

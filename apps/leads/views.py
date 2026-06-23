@@ -11,7 +11,7 @@ from apps.companies.models import Company, Language
 from apps.marketing.models import Campaign, CampaignEvent, SocialMediaAd, ExhibitionRecord
 from .models import Lead, LeadSource, LeadStage, HowDidYouKnowOption, LeadActivity, LeadFollowUp, Meeting
 from .forms import LeadForm
-from .services.leads import LeadService, normalize_phone
+from .services.leads import LeadService, normalize_phone, FollowUpService, MeetingService
 from .selectors import (
     get_leads_list,
     get_lead_stages,
@@ -96,10 +96,30 @@ class LeadDetailView(LoginRequiredMixin, CRMPermissionRequiredMixin, DetailView)
             LeadActivity.objects.create(lead=lead, activity_type=request.POST.get('activity_type','note'), subject=request.POST.get('subject',''), body=request.POST.get('body',''), result=request.POST.get('result',''), created_by=request.user)
             msg = 'Activity added.'
         elif action == 'followup':
-            LeadFollowUp.objects.create(lead=lead, assigned_to=request.user, due_at=request.POST.get('due_at'), reminder_at=request.POST.get('reminder_at') or None, notes=request.POST.get('notes',''))
+            due_at = request.POST.get('due_at')
+            reminder_at = request.POST.get('reminder_at') or None
+            notes = request.POST.get('notes', '')
+            FollowUpService.schedule_followup(
+                lead=lead,
+                actor=request.user,
+                due_at=due_at,
+                reminder_at=reminder_at,
+                notes=notes
+            )
             msg = 'Follow-up scheduled.'
         elif action == 'meeting':
-            Meeting.objects.create(lead=lead, assigned_to=request.user, scheduled_at=request.POST.get('scheduled_at'), location=request.POST.get('location',''), meeting_type=request.POST.get('meeting_type','office'), notes=request.POST.get('notes',''))
+            scheduled_at = request.POST.get('scheduled_at')
+            location = request.POST.get('location', '')
+            meeting_type = request.POST.get('meeting_type', 'office')
+            notes = request.POST.get('notes', '')
+            MeetingService.schedule_meeting(
+                lead=lead,
+                actor=request.user,
+                scheduled_at=scheduled_at,
+                location=location,
+                meeting_type=meeting_type,
+                notes=notes
+            )
             msg = 'Meeting scheduled.'
         else:
             msg = 'No action selected.'

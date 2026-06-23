@@ -3,7 +3,7 @@ import re
 from datetime import timedelta
 from django.utils import timezone
 from django.db import transaction
-from apps.leads.models import Lead, LeadAssignment, LeadStageHistory, LeadReactivation
+from apps.leads.models import Lead, LeadAssignment, LeadStageHistory, LeadReactivation, LeadFollowUp, Meeting
 from apps.marketing.models import LeadCampaignAttribution
 from apps.distribution.services.distribution import DistributionService
 from apps.sla.services.sla import SLAService
@@ -80,6 +80,25 @@ class LeadService:
         source_code = normalize_source_code(getattr(source, 'code', metadata.get('source_code', '')))
         if origin is None:
             origin = Lead.ORIGIN_BROKER if source_code == 'broker' else Lead.ORIGIN_DIRECT
+
+        # Resolve broker from actor or metadata
+        broker = None
+        from apps.accounts.models import BrokerProfile, User
+        if actor and hasattr(actor, 'broker_profile') and actor.broker_profile.is_active and actor.broker_profile.company == company:
+            broker = actor.broker_profile
+        else:
+            broker_ref = metadata.get('broker') or kwargs.get('broker')
+            if broker_ref:
+                if isinstance(broker_ref, BrokerProfile):
+                    broker = broker_ref
+                elif isinstance(broker_ref, User):
+                    broker = BrokerProfile.objects.filter(user=broker_ref, company=company, is_active=True).first()
+                elif isinstance(broker_ref, str):
+                    broker = BrokerProfile.objects.filter(pk=broker_ref, company=company, is_active=True).first()
+                    if not broker:
+                        broker = BrokerProfile.objects.filter(user_id=broker_ref, company=company, is_active=True).first()
+        if broker:
+            kwargs['broker'] = broker
 
         # If team or salesman is passed inside metadata, pop and resolve them
         if not team:
@@ -272,31 +291,66 @@ class LeadService:
     @staticmethod
     def _assign_broker(*, lead, actor, metadata, team=None, salesman=None):
         """Broker business rules from Doc 2 Section 4.2c."""
-        from apps.accounts.models import BrokerProfile
+        from apps.accounts.models import BrokerProfile, SalesProfile, User
 
         broker_mode = metadata.get('broker_assign_mode') or PolicyResolver.get_broker_assign_mode(lead.company)
 
-        # Check if actor is a broker
-        is_broker = BrokerProfile.objects.filter(user=actor, company=lead.company, is_active=True).exists()
-
-        if is_broker:
-            # Broker logged in → auto-assign to broker
-            result = LeadService.assign_lead(lead=lead, actor=actor, strategy_code='manual_assignment', salesman=actor)
-            if broker_mode == 'assign_salesman':
-                # Also assign to a company salesman (run auto-distribution)
-                LeadService.assign_lead(lead=lead, actor=actor)
-            return result
+        # 1. Resolve and set broker on the lead:
+        actor_broker_profile = BrokerProfile.objects.filter(user=actor, company=lead.company, is_active=True).first()
+        broker = None
+        if actor_broker_profile:
+            broker = actor_broker_profile
         else:
-            # Another user logged in: select broker, optionally assign salesman
-            if not salesman:
-                salesman = metadata.get('salesman')
-            if salesman:
-                return LeadService.assign_lead(lead=lead, actor=actor, strategy_code='manual_assignment',
-                                               salesman=salesman, team=team or metadata.get('team'))
-            if broker_mode == 'assign_salesman':
-                return LeadService.assign_lead(lead=lead, actor=actor)
-            # Remain with broker only — just mark as assigned
-            return LeadService.assign_lead(lead=lead, actor=actor, strategy_code='manual_assignment')
+            broker_ref = metadata.get('broker')
+            if broker_ref:
+                if isinstance(broker_ref, BrokerProfile):
+                    broker = broker_ref
+                elif isinstance(broker_ref, User):
+                    broker = BrokerProfile.objects.filter(user=broker_ref, company=lead.company, is_active=True).first()
+                elif isinstance(broker_ref, str):
+                    broker = BrokerProfile.objects.filter(pk=broker_ref, company=lead.company, is_active=True).first()
+                    if not broker:
+                        broker = BrokerProfile.objects.filter(user_id=broker_ref, company=lead.company, is_active=True).first()
+        if broker:
+            lead.broker = broker
+            lead.save(update_fields=['broker', 'updated_at'])
+
+        # Log broker_owner_assigned audit
+        AuditService.log(company=lead.company, actor=actor, action='lead.broker_owner_assigned', obj=lead)
+
+        # 2. Check if the broker user (associated with lead.broker or actor) has an active SalesProfile
+        broker_user = lead.broker.user if lead.broker else (actor if actor_broker_profile else None)
+
+        has_sales_profile = False
+        if broker_user:
+            has_sales_profile = SalesProfile.objects.filter(user=broker_user, company=lead.company, is_available=True).exists()
+
+        if not salesman:
+            salesman = metadata.get('salesman')
+        if isinstance(salesman, str):
+            salesman = User.objects.filter(pk=salesman).first()
+
+        if salesman:
+            # We are assigning to an explicit company salesman
+            result = LeadService.assign_lead(lead=lead, actor=None, strategy_code='manual_assignment',
+                                           salesman=salesman, team=team or metadata.get('team'))
+            AuditService.log(company=lead.company, actor=actor, action='lead.broker_to_sales_assigned', obj=lead)
+            return result
+
+        if broker_mode == 'assign_salesman':
+            # Run auto-distribution
+            result = LeadService.assign_lead(lead=lead, actor=None)
+            AuditService.log(company=lead.company, actor=actor, action='lead.broker_to_sales_assigned', obj=lead)
+            return result
+
+        # If broker user has a SalesProfile, assign them as salesman
+        if has_sales_profile and broker_user:
+            result = LeadService.assign_lead(lead=lead, actor=None, strategy_code='manual_assignment', salesman=broker_user)
+            return result
+
+        # Otherwise, remain with broker only - just mark as assigned, salesman=None
+        result = LeadService.assign_lead(lead=lead, actor=None, strategy_code='manual_assignment', salesman=None)
+        return result
 
     @staticmethod
     def _assign_walkin(*, lead, actor, metadata, team=None, salesman=None):
@@ -517,3 +571,277 @@ class LeadService:
             related_object=lead,
         ) if lead.current_salesman else None
         return lead
+
+
+class FollowUpService:
+    @staticmethod
+    def schedule_followup(*, lead, actor, due_at, reminder_at=None, notes='', assigned_to=None):
+        from apps.permissions_engine.services.engine import PermissionEngine
+        if actor and not actor.is_superuser and not PermissionEngine.has_perm(actor, 'leads.create_followup'):
+            raise PermissionError("Actor does not have permission to schedule a follow-up.")
+
+        if actor and not actor.is_superuser and actor.company and lead.company != actor.company:
+            raise PermissionError("Company mismatch: Lead does not belong to your company.")
+
+        if not due_at:
+            raise ValueError("Follow-up due_at is required.")
+
+        followup = LeadFollowUp.objects.create(
+            lead=lead,
+            assigned_to=assigned_to or actor,
+            due_at=due_at,
+            reminder_at=reminder_at,
+            notes=notes,
+            status='pending',
+        )
+
+        if followup.reminder_at and followup.reminder_at > timezone.now():
+            NotificationService.create_reminder(
+                company=lead.company,
+                recipient=followup.assigned_to,
+                title=f"Follow-up reminder: {lead.full_name}",
+                message=f"Scheduled follow-up for {lead.full_name} is due at {followup.due_at}.",
+                due_at=followup.reminder_at,
+                reminder_type='followup_warning',
+                lead=lead,
+            )
+
+        AuditService.log(
+            company=lead.company,
+            actor=actor,
+            action='lead.followup_scheduled',
+            obj=lead,
+            metadata={'followup_id': str(followup.id), 'due_at': str(due_at)}
+        )
+        return followup
+
+    @staticmethod
+    def update_followup(*, followup, actor, due_at=None, reminder_at=None, notes=None, assigned_to=None, status=None):
+        from apps.permissions_engine.services.engine import PermissionEngine
+        if actor and not actor.is_superuser and not PermissionEngine.has_perm(actor, 'leads.create_followup'):
+            raise PermissionError("Actor does not have permission to update a follow-up.")
+
+        lead = followup.lead
+        if actor and not actor.is_superuser and actor.company and lead.company != actor.company:
+            raise PermissionError("Company mismatch: Lead does not belong to your company.")
+
+        old_reminder = followup.reminder_at
+
+        if due_at is not None:
+            followup.due_at = due_at
+        if reminder_at is not None:
+            followup.reminder_at = reminder_at
+        if notes is not None:
+            followup.notes = notes
+        if assigned_to is not None:
+            followup.assigned_to = assigned_to
+        if status is not None:
+            followup.status = status
+
+        followup.save()
+
+        if reminder_at and reminder_at != old_reminder and reminder_at > timezone.now():
+            NotificationService.create_reminder(
+                company=lead.company,
+                recipient=followup.assigned_to,
+                title=f"Follow-up reminder: {lead.full_name}",
+                message=f"Scheduled follow-up for {lead.full_name} is due at {followup.due_at}.",
+                due_at=reminder_at,
+                reminder_type='followup_warning',
+                lead=lead,
+            )
+
+        AuditService.log(
+            company=lead.company,
+            actor=actor,
+            action='lead.followup_updated',
+            obj=lead,
+            metadata={'followup_id': str(followup.id), 'status': followup.status}
+        )
+        return followup
+
+    @staticmethod
+    def complete_followup(*, followup, actor, notes=''):
+        from apps.permissions_engine.services.engine import PermissionEngine
+        if actor and not actor.is_superuser and not PermissionEngine.has_perm(actor, 'leads.create_followup'):
+            raise PermissionError("Actor does not have permission to complete a follow-up.")
+
+        lead = followup.lead
+        if actor and not actor.is_superuser and actor.company and lead.company != actor.company:
+            raise PermissionError("Company mismatch: Lead does not belong to your company.")
+
+        followup.status = 'done'
+        if notes:
+            followup.notes = notes
+        followup.save()
+
+        AuditService.log(
+            company=lead.company,
+            actor=actor,
+            action='lead.followup_completed',
+            obj=lead,
+            metadata={'followup_id': str(followup.id)}
+        )
+        return followup
+
+    @staticmethod
+    def cancel_followup(*, followup, actor):
+        from apps.permissions_engine.services.engine import PermissionEngine
+        if actor and not actor.is_superuser and not PermissionEngine.has_perm(actor, 'leads.create_followup'):
+            raise PermissionError("Actor does not have permission to cancel a follow-up.")
+
+        lead = followup.lead
+        if actor and not actor.is_superuser and actor.company and lead.company != actor.company:
+            raise PermissionError("Company mismatch: Lead does not belong to your company.")
+
+        followup.status = 'cancelled'
+        followup.save()
+
+        AuditService.log(
+            company=lead.company,
+            actor=actor,
+            action='lead.followup_cancelled',
+            obj=lead,
+            metadata={'followup_id': str(followup.id)}
+        )
+        return followup
+
+
+class MeetingService:
+    @staticmethod
+    def schedule_meeting(*, lead, actor, scheduled_at, location='', meeting_type='office', notes='', assigned_to=None):
+        from apps.permissions_engine.services.engine import PermissionEngine
+        if actor and not actor.is_superuser and not PermissionEngine.has_perm(actor, 'leads.create_meeting'):
+            raise PermissionError("Actor does not have permission to schedule a meeting.")
+
+        if actor and not actor.is_superuser and actor.company and lead.company != actor.company:
+            raise PermissionError("Company mismatch: Lead does not belong to your company.")
+
+        if not scheduled_at:
+            raise ValueError("Meeting scheduled_at is required.")
+
+        meeting = Meeting.objects.create(
+            lead=lead,
+            assigned_to=assigned_to or actor,
+            scheduled_at=scheduled_at,
+            location=location,
+            meeting_type=meeting_type,
+            notes=notes,
+            status='scheduled',
+        )
+
+        reminder_time = meeting.scheduled_at - timedelta(hours=1)
+        if reminder_time > timezone.now():
+            NotificationService.create_reminder(
+                company=lead.company,
+                recipient=meeting.assigned_to,
+                title=f"Meeting reminder: {lead.full_name}",
+                message=f"Scheduled meeting ({meeting.meeting_type}) with {lead.full_name} is at {meeting.scheduled_at}.",
+                due_at=reminder_time,
+                reminder_type='meeting_warning',
+                lead=lead,
+            )
+
+        AuditService.log(
+            company=lead.company,
+            actor=actor,
+            action='lead.meeting_scheduled',
+            obj=lead,
+            metadata={'meeting_id': str(meeting.id), 'scheduled_at': str(scheduled_at)}
+        )
+        return meeting
+
+    @staticmethod
+    def update_meeting(*, meeting, actor, scheduled_at=None, location=None, meeting_type=None, notes=None, assigned_to=None, status=None):
+        from apps.permissions_engine.services.engine import PermissionEngine
+        if actor and not actor.is_superuser and not PermissionEngine.has_perm(actor, 'leads.create_meeting'):
+            raise PermissionError("Actor does not have permission to update a meeting.")
+
+        lead = meeting.lead
+        if actor and not actor.is_superuser and actor.company and lead.company != actor.company:
+            raise PermissionError("Company mismatch: Lead does not belong to your company.")
+
+        old_scheduled_at = meeting.scheduled_at
+
+        if scheduled_at is not None:
+            meeting.scheduled_at = scheduled_at
+        if location is not None:
+            meeting.location = location
+        if meeting_type is not None:
+            meeting.meeting_type = meeting_type
+        if notes is not None:
+            meeting.notes = notes
+        if assigned_to is not None:
+            meeting.assigned_to = assigned_to
+        if status is not None:
+            meeting.status = status
+
+        meeting.save()
+
+        if scheduled_at and scheduled_at != old_scheduled_at:
+            reminder_time = scheduled_at - timedelta(hours=1)
+            if reminder_time > timezone.now():
+                NotificationService.create_reminder(
+                    company=lead.company,
+                    recipient=meeting.assigned_to,
+                    title=f"Meeting reminder: {lead.full_name}",
+                    message=f"Scheduled meeting ({meeting.meeting_type}) with {lead.full_name} is at {meeting.scheduled_at}.",
+                    due_at=reminder_time,
+                    reminder_type='meeting_warning',
+                    lead=lead,
+                )
+
+        AuditService.log(
+            company=lead.company,
+            actor=actor,
+            action='lead.meeting_updated',
+            obj=lead,
+            metadata={'meeting_id': str(meeting.id), 'status': meeting.status}
+        )
+        return meeting
+
+    @staticmethod
+    def complete_meeting(*, meeting, actor, notes=''):
+        from apps.permissions_engine.services.engine import PermissionEngine
+        if actor and not actor.is_superuser and not PermissionEngine.has_perm(actor, 'leads.create_meeting'):
+            raise PermissionError("Actor does not have permission to complete a meeting.")
+
+        lead = meeting.lead
+        if actor and not actor.is_superuser and actor.company and lead.company != actor.company:
+            raise PermissionError("Company mismatch: Lead does not belong to your company.")
+
+        meeting.status = 'done'
+        if notes:
+            meeting.notes = notes
+        meeting.save()
+
+        AuditService.log(
+            company=lead.company,
+            actor=actor,
+            action='lead.meeting_completed',
+            obj=lead,
+            metadata={'meeting_id': str(meeting.id)}
+        )
+        return meeting
+
+    @staticmethod
+    def cancel_meeting(*, meeting, actor):
+        from apps.permissions_engine.services.engine import PermissionEngine
+        if actor and not actor.is_superuser and not PermissionEngine.has_perm(actor, 'leads.create_meeting'):
+            raise PermissionError("Actor does not have permission to cancel a meeting.")
+
+        lead = meeting.lead
+        if actor and not actor.is_superuser and actor.company and lead.company != actor.company:
+            raise PermissionError("Company mismatch: Lead does not belong to your company.")
+
+        meeting.status = 'cancelled'
+        meeting.save()
+
+        AuditService.log(
+            company=lead.company,
+            actor=actor,
+            action='lead.meeting_cancelled',
+            obj=lead,
+            metadata={'meeting_id': str(meeting.id)}
+        )
+        return meeting

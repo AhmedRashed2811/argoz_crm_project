@@ -2,7 +2,7 @@ import hashlib
 import hmac
 import json
 from django.utils import timezone
-from django.db import transaction
+from django.db import models, transaction
 from apps.integrations.models import TenantWebhookEndpoint, IncomingWebhookPayload, ExternalFormMapping
 from apps.leads.services.leads import LeadService
 from apps.audit.services.audit import AuditService
@@ -52,7 +52,8 @@ class IncomingWebhookService:
         except Exception as exc:
             payload.processing_status = 'failed'
             payload.error_message = str(exc)
-            payload.save(update_fields=['processing_status', 'error_message', 'updated_at'])
+            payload.next_retry_at = timezone.now() + timezone.timedelta(minutes=5)
+            payload.save(update_fields=['processing_status', 'error_message', 'next_retry_at', 'updated_at'])
             endpoint.integration.status = 'error'
             endpoint.integration.last_error = str(exc)
             endpoint.integration.save(update_fields=['status', 'last_error', 'updated_at'])
@@ -116,3 +117,56 @@ class IncomingWebhookService:
             payload.save(update_fields=['processing_status', 'error_message', 'updated_at'])
             AuditService.log(company=payload.endpoint.company, actor_type='webhook', action='webhook.payload_reprocess_failed', obj=payload, metadata={'error': str(exc)})
             raise
+
+    @classmethod
+    def retry_failed_payloads(cls):
+        from django.db.models import F
+        now = timezone.now()
+        failed_payloads = IncomingWebhookPayload.objects.filter(
+            processing_status='failed',
+            retry_count__lt=F('max_retry_count')
+        ).filter(
+            models.Q(next_retry_at__isnull=True) | models.Q(next_retry_at__lte=now)
+        )
+        
+        count = 0
+        for payload in failed_payloads:
+            with transaction.atomic():
+                try:
+                    payload.retry_count += 1
+                    payload.last_retry_at = timezone.now()
+                    
+                    lead = cls.process_payload(payload)
+                    payload.processed_lead = lead
+                    payload.processing_status = 'reprocessed'
+                    payload.processed_at = timezone.now()
+                    payload.error_message = ''
+                    payload.save(update_fields=['processed_lead', 'processing_status', 'processed_at', 'error_message', 'retry_count', 'last_retry_at', 'updated_at'])
+                    
+                    AuditService.log(
+                        company=payload.endpoint.company,
+                        actor_type='webhook',
+                        action='webhook.payload_reprocessed',
+                        obj=lead,
+                        metadata={'payload_id': str(payload.id), 'retry_attempt': payload.retry_count}
+                    )
+                    
+                    endpoint = payload.endpoint
+                    endpoint.integration.last_success_at = timezone.now()
+                    endpoint.integration.last_error = ''
+                    endpoint.integration.save(update_fields=['last_success_at', 'last_error', 'updated_at'])
+                    count += 1
+                except Exception as exc:
+                    backoff_minutes = 5 * (2 ** (payload.retry_count - 1))
+                    payload.next_retry_at = timezone.now() + timezone.timedelta(minutes=backoff_minutes)
+                    payload.error_message = str(exc)
+                    payload.save(update_fields=['next_retry_at', 'error_message', 'retry_count', 'last_retry_at', 'updated_at'])
+                    
+                    AuditService.log(
+                        company=payload.endpoint.company,
+                        actor_type='webhook',
+                        action='webhook.payload_reprocess_failed',
+                        obj=payload,
+                        metadata={'error': str(exc), 'retry_attempt': payload.retry_count, 'next_retry_at': payload.next_retry_at.isoformat()}
+                    )
+        return count

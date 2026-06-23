@@ -30,8 +30,19 @@ class CampaignValidationService:
 
     @classmethod
     def validate_has_type_selection(cls, campaign: Campaign):
-        if not campaign.type_selections.filter(is_active=True).exists():
+        active_types = set(campaign.type_selections.filter(is_active=True).values_list('type_code', flat=True))
+        if not active_types:
             raise ValueError('At least one campaign type must be selected before submission/completion.')
+        if campaign.events.exists() and 'events' not in active_types:
+            raise ValueError('Campaign contains events but does not select "events" type.')
+        if campaign.tv_ads.exists() and 'tv_ads' not in active_types:
+            raise ValueError('Campaign contains TV ads but does not select "tv_ads" type.')
+        if campaign.street_ads.exists() and 'street_ads' not in active_types:
+            raise ValueError('Campaign contains street ads but does not select "street_ads" type.')
+        if campaign.exhibitions.exists() and 'exhibition' not in active_types:
+            raise ValueError('Campaign contains exhibitions but does not select "exhibition" type.')
+        if campaign.social_ads.exists() and 'social_media' not in active_types:
+            raise ValueError('Campaign contains social media ads but does not select "social_media" type.')
         return True
 
     @classmethod
@@ -342,3 +353,158 @@ class CampaignAttributionService:
     def leads_for_campaign(campaign):
         from apps.leads.models import Lead
         return Lead.objects.filter(campaign_attributions__campaign=campaign).distinct()
+
+
+class CampaignCreationService:
+    @staticmethod
+    @transaction.atomic
+    def create_campaign(company, user, data):
+        campaign = Campaign.objects.create(
+            company=company,
+            name=data.get('name', '').strip(),
+            description=data.get('description', '').strip(),
+            start_date=data.get('start_date'),
+            end_date=data.get('end_date'),
+            target_type=data.get('target_type') or 'other',
+            created_by_user=user,
+            approval_status='draft',
+        )
+
+        campaign_types = data.get('campaign_types', [])
+        for code in campaign_types:
+            CampaignTypeSelection.objects.get_or_create(campaign=campaign, type_code=code)
+
+        if 'events' in campaign_types:
+            for event_data in data.get('events', []):
+                event_name = event_data.get('event_name', '').strip()
+                if not event_name:
+                    continue
+                event = CampaignEvent.objects.create(
+                    campaign=campaign,
+                    event_name=event_name,
+                    venue_place=event_data.get('venue_place', ''),
+                    event_date=event_data.get('event_date'),
+                    budget=event_data.get('budget', Decimal('0.00')),
+                    target_attendees=event_data.get('target_attendees') or None,
+                    description=event_data.get('description', ''),
+                )
+                for celeb in event_data.get('celebrities', []):
+                    cname = celeb.get('name', '').strip()
+                    if cname:
+                        EventCelebrity.objects.create(event=event, name=cname, budget=celeb.get('budget', Decimal('0.00')))
+                for giveaway in event_data.get('giveaways', []):
+                    gname = giveaway.get('name', '').strip()
+                    if gname:
+                        EventGiveaway.objects.create(event=event, name=gname, budget=giveaway.get('budget', Decimal('0.00')))
+                for cater in event_data.get('catering', []):
+                    cname = cater.get('name', '').strip()
+                    if cname:
+                        EventCatering.objects.create(event=event, name=cname, budget=cater.get('budget', Decimal('0.00')))
+
+        if 'tv_ads' in campaign_types:
+            for tv_data in data.get('tv_ads', []):
+                tv_name = tv_data.get('name', '').strip()
+                if not tv_name:
+                    continue
+                tv = TVAd.objects.create(
+                    campaign=campaign,
+                    name=tv_name,
+                    start_date=tv_data.get('start_date'),
+                    end_date=tv_data.get('end_date'),
+                    budget=tv_data.get('budget', Decimal('0.00')),
+                    description=tv_data.get('description', ''),
+                )
+                for ch in tv_data.get('channels', []):
+                    ch_name = ch.get('channel_name', '').strip()
+                    if ch_name:
+                        TVAdChannel.objects.create(tv_ad=tv, channel_name=ch_name, channel_budget=ch.get('channel_budget', Decimal('0.00')))
+                for slot in tv_data.get('slots', []):
+                    app_time = slot.get('appearance_time')
+                    if app_time:
+                        TVAdSlot.objects.create(tv_ad=tv, appearance_time=app_time, number_of_appearances=slot.get('number_of_appearances', 1) or 1)
+
+        if 'street_ads' in campaign_types:
+            for street_data in data.get('street_ads', []):
+                street_name = street_data.get('name', '').strip()
+                if not street_name:
+                    continue
+                street = StreetAd.objects.create(
+                    campaign=campaign,
+                    name=street_name,
+                    start_date=street_data.get('start_date'),
+                    end_date=street_data.get('end_date'),
+                    budget=street_data.get('budget', Decimal('0.00')),
+                    description=street_data.get('description', ''),
+                )
+                for type_line in street_data.get('type_lines', []):
+                    ad_type = type_line.get('ad_type')
+                    if not ad_type:
+                        continue
+                    line = StreetAdTypeLine.objects.create(
+                        street_ad=street,
+                        ad_type=ad_type,
+                        total_number=type_line.get('total_number', 1) or 1,
+                        budget=type_line.get('budget', Decimal('0.00')),
+                    )
+                    loc = type_line.get('location', '').strip()
+                    if loc:
+                        StreetAdLocation.objects.create(type_line=line, location=loc, budget=type_line.get('location_budget', Decimal('0.00')))
+
+        if 'exhibition' in campaign_types:
+            for ex_data in data.get('exhibitions', []):
+                ex_name = ex_data.get('name', '').strip()
+                if not ex_name:
+                    continue
+                ExhibitionRecord.objects.create(
+                    campaign=campaign,
+                    name=ex_name,
+                    place=ex_data.get('place', ''),
+                    start_date=ex_data.get('start_date'),
+                    end_date=ex_data.get('end_date'),
+                    budget=ex_data.get('budget', Decimal('0.00')),
+                )
+
+        if 'social_media' in campaign_types:
+            for social_data in data.get('social_ads', []):
+                social_name = social_data.get('name', '').strip()
+                if not social_name:
+                    continue
+                ad = SocialMediaAd.objects.create(
+                    campaign=campaign,
+                    name=social_name,
+                    target_kpi=social_data.get('target_kpi', ''),
+                    description=social_data.get('description', ''),
+                )
+                for line in social_data.get('platforms', []):
+                    platform = line.get('platform')
+                    if platform:
+                        SocialMediaPlatformLine.objects.create(
+                            social_ad=ad,
+                            platform=platform,
+                            budget=line.get('budget', Decimal('0.00')),
+                            target_value=line.get('target_value', Decimal('0.00')),
+                        )
+
+        for cost_data in data.get('other_costs', []):
+            cost_val = cost_data.get('value')
+            cost_reason = cost_data.get('reason', '').strip()
+            if cost_val is not None:
+                if not cost_reason:
+                    raise ValueError("Other cost reason is required.")
+                CampaignOtherCost.objects.create(
+                    campaign=campaign,
+                    value=cost_val,
+                    reason=cost_reason,
+                    cost_created_by=user,
+                )
+
+        CampaignBudgetService.refresh_total(campaign, actor=user)
+
+        AuditService.log(
+            company=campaign.company,
+            actor=user,
+            action='campaign.created',
+            obj=campaign,
+            after={'name': campaign.name, 'target_type': campaign.target_type}
+        )
+        return campaign
