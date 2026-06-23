@@ -1,7 +1,7 @@
 from django.core.mail import send_mail
 from django.conf import settings
 from django.utils import timezone
-from apps.notifications.models import Notification, NotificationType, NotificationDelivery, EmailOutbox, Reminder
+from apps.notifications.models import Notification, NotificationType, NotificationDelivery, EmailOutbox, NotificationPreference, Reminder
 
 
 class NotificationService:
@@ -20,10 +20,27 @@ class NotificationService:
             related_object_type=related_object.__class__.__name__ if related_object else '',
             related_object_id=str(getattr(related_object, 'pk', '')) if related_object else '',
         )
-        for channel in channels or ntype.default_channels or ['in_app']:
-            NotificationDelivery.objects.create(notification=notification, channel=channel)
+        # Build the set of channels the recipient has NOT disabled.
+        requested_channels = channels or ntype.default_channels or ['in_app']
+        disabled = set(
+            NotificationPreference.objects.filter(
+                user=recipient,
+                notification_type=ntype,
+                is_enabled=False,
+                channel__in=requested_channels,
+            ).values_list('channel', flat=True)
+        )
+        for channel in requested_channels:
+            if channel != 'in_app' and channel in disabled:
+                continue
+            delivery = NotificationDelivery.objects.create(notification=notification, channel=channel)
             if channel == 'email' and recipient.email:
-                EmailOutbox.objects.create(company=company, to_email=recipient.email, subject=title, body=message)
+                # Email is delivered asynchronously by the outbox worker; the
+                # delivery row stays 'pending' until the outbox marks it 'sent'.
+                EmailOutbox.objects.create(
+                    company=company, delivery=delivery, to_email=recipient.email,
+                    subject=title, body=message,
+                )
             elif channel == 'realtime_ws' or channel == 'in_app':
                 # Try sending realtime WebSocket message
                 try:
@@ -47,6 +64,11 @@ class NotificationService:
                         )
                 except Exception:
                     pass  # Ensure robust execution even if channels layer is not configured / running in some contexts
+                # In-app and realtime deliveries are synchronous: the record is
+                # immediately available to the recipient, so mark it delivered.
+                delivery.status = 'sent'
+                delivery.sent_at = timezone.now()
+                delivery.save(update_fields=['status', 'sent_at', 'updated_at'])
         return notification
 
     @staticmethod
@@ -67,18 +89,22 @@ class EmailOutboxService:
     def deliver_pending(limit=100):
         now = timezone.now()
         sent = 0
-        for email in EmailOutbox.objects.filter(status='pending', scheduled_at__lte=now).order_by('scheduled_at')[:limit]:
+        for email in EmailOutbox.objects.select_related('delivery').filter(status='pending', scheduled_at__lte=now).order_by('scheduled_at')[:limit]:
             try:
                 send_mail(email.subject, email.body or str(email.context), settings.DEFAULT_FROM_EMAIL, [email.to_email], fail_silently=False)
                 email.status = 'sent'
                 email.sent_at = now
                 email.save(update_fields=['status', 'sent_at', 'updated_at'])
+                if email.delivery_id:
+                    NotificationDelivery.objects.filter(pk=email.delivery_id).update(status='sent', sent_at=now)
                 sent += 1
             except Exception as exc:
                 email.retry_count += 1
                 email.status = 'failed' if email.retry_count >= 3 else 'pending'
                 email.error_message = str(exc)
                 email.save(update_fields=['retry_count', 'status', 'error_message', 'updated_at'])
+                if email.status == 'failed' and email.delivery_id:
+                    NotificationDelivery.objects.filter(pk=email.delivery_id).update(status='failed', error_message=str(exc))
         return sent
 
 

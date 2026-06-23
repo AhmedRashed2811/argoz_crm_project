@@ -35,29 +35,13 @@ class IncomingWebhookService:
         endpoint.last_used_at = timezone.now()
         endpoint.save(update_fields=['last_used_at', 'updated_at'])
         idem = cls.extract_idempotency_key(raw_payload)
-        payload, created = IncomingWebhookPayload.objects.get_or_create(endpoint=endpoint, idempotency_key=idem, defaults={'raw_payload': raw_payload})
+        payload, created = IncomingWebhookPayload.objects.get_or_create(endpoint=endpoint, idempotency_key=idem, defaults={'raw_payload': raw_payload, 'processing_status': 'received'})
         if not created and payload.processing_status in ('processed', 'reprocessed'):
             return payload
-        try:
-            lead = cls.process_payload(payload)
-            payload.processed_lead = lead
-            payload.processing_status = 'processed'
-            payload.processed_at = timezone.now()
-            payload.save(update_fields=['processed_lead', 'processing_status', 'processed_at', 'updated_at'])
-            endpoint.integration.last_success_at = timezone.now()
-            endpoint.integration.last_error = ''
-            endpoint.integration.save(update_fields=['last_success_at', 'last_error', 'updated_at'])
-            AuditService.log(company=endpoint.company, actor_type='webhook', action='webhook.payload_processed', obj=lead, metadata={'payload_id': str(payload.id)})
-            return payload
-        except Exception as exc:
-            payload.processing_status = 'failed'
-            payload.error_message = str(exc)
-            payload.next_retry_at = timezone.now() + timezone.timedelta(minutes=5)
-            payload.save(update_fields=['processing_status', 'error_message', 'next_retry_at', 'updated_at'])
-            endpoint.integration.status = 'error'
-            endpoint.integration.last_error = str(exc)
-            endpoint.integration.save(update_fields=['status', 'last_error', 'updated_at'])
-            raise
+        # Dispatch to Celery so the HTTP response is returned immediately.
+        from apps.integrations.tasks import process_webhook_payload
+        process_webhook_payload.delay(str(payload.id))
+        return payload
 
     @classmethod
     def process_payload(cls, payload: IncomingWebhookPayload):

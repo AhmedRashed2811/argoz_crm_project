@@ -80,6 +80,7 @@ class NotificationDelivery(UUIDBaseModel):
 class EmailOutbox(UUIDBaseModel):
     STATUS_CHOICES = [('pending', 'Pending'), ('sent', 'Sent'), ('failed', 'Failed'), ('cancelled', 'Cancelled')]
     company = models.ForeignKey('companies.Company', null=True, blank=True, on_delete=models.CASCADE, related_name='email_outbox')
+    delivery = models.ForeignKey('NotificationDelivery', null=True, blank=True, on_delete=models.SET_NULL, related_name='email_outbox_entries')
     to_email = models.EmailField()
     subject = models.CharField(max_length=255)
     template_name = models.CharField(max_length=255, blank=True)
@@ -121,3 +122,19 @@ class Reminder(UUIDBaseModel):
     class Meta:
         ordering = ['due_at']
         indexes = [models.Index(fields=['status', 'due_at'])]
+
+
+class ExportJob(UUIDBaseModel):
+    STATUS_CHOICES = [('pending', 'Pending'), ('processing', 'Processing'), ('done', 'Done'), ('failed', 'Failed')]
+    company = models.ForeignKey('companies.Company', on_delete=models.CASCADE, related_name='export_jobs')
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='export_jobs')
+    export_type = models.CharField(max_length=60)
+    filters = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    error_message = models.TextField(blank=True)
+    row_count = models.PositiveIntegerField(default=0)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['company', 'status', 'created_at'])]

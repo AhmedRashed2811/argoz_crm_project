@@ -27,8 +27,12 @@ class DistributionService:
                     lead.company, source_code, cls.DEFAULT_STRATEGY,
                 )
         scope_mode = scope_mode or PolicyResolver.get_distribution_scope_mode(lead.company, cls.DEFAULT_SCOPE)
+        # Resolve the language pre-check (defaults to the company default language
+        # per Doc 1 §3.2.3) and pass it down so every strategy filters the pool.
+        from apps.distribution.selectors import resolve_distribution_language
+        language = resolve_distribution_language(lead)
         strategy = DistributionStrategyRegistry.get(strategy_code)
-        result = strategy.assign(lead=lead, actor=actor, scope_mode=scope_mode, team=team, salesman=salesman)
+        result = strategy.assign(lead=lead, actor=actor, scope_mode=scope_mode, team=team, salesman=salesman, language=language)
         AuditService.log(company=lead.company, actor=actor, action='lead.assigned', obj=lead, after={
             'strategy_code': result.strategy_code,
             'salesman_id': str(result.salesman_id) if hasattr(result, 'salesman_id') else str(result.salesman.id) if result.salesman else None,

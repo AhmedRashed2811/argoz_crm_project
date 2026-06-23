@@ -14,6 +14,8 @@ class DistributionStrategyRegistry:
     _registry = {
         RoundRobinLoadBalancedStrategy.code: RoundRobinLoadBalancedStrategy,
         ByTurnSequentialStrategy.code: ByTurnSequentialStrategy,
+        # Document token alias for the By Turn strategy (Doc 1 §3.2.1 Method B).
+        'by_turn_sequential': ByTurnSequentialStrategy,
         RetryTeamEscalationStrategy.code: RetryTeamEscalationStrategy,
         ManualAssignmentStrategy.code: ManualAssignmentStrategy,
         WalkInOpenFloorStrategy.code: WalkInOpenFloorStrategy,

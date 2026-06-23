@@ -181,12 +181,20 @@ class Command(BaseCommand):
 
     def seed_policies(self, company):
         policy_specs = {
+            # Distribution
             'lead_auto_distribution_strategy': ('distribution', 'Lead automatic distribution strategy', ['round_robin_load_balanced', 'by_turn', 'retry_team_escalation']),
             'lead_distribution_scope_mode': ('distribution', 'Lead distribution scope mode', ['team_then_salesman', 'team_then_sales_head', 'all_salesmen']),
+            # SLA
             'sla_expiry_method': ('sla', 'SLA expiry method', ['round_robin_load_balanced', 'retry_team_escalation']),
+            # Lead source behaviours
             'walkin_reception_policy': ('leads', 'Walk-in reception policy', ['open_floor', 'team_turn', 'full_rotation']),
             'existing_client_policy': ('leads', 'Existing client preservation policy', ['preserve_original_salesman', 'redistribute_directly']),
-            'meta_connector_mode': ('integrations', 'Meta connector mode', ['make_dynamic_webhook', 'zapier_dynamic_webhook', 'native_future']),
+            'self_generated_salesman_mode': ('leads', 'Self-generated lead salesman assignment mode', ['permanent_own', 'team_round_robin']),
+            'broker_auto_assign_salesman': ('leads', 'Broker lead auto-assign salesman mode', ['broker_only', 'auto_distribute']),
+            # Campaign / finance
+            'campaign_budget_calculation_rule': ('marketing', 'Campaign budget calculation rule', ['auto_sum', 'manual']),
+            # Integrations
+            'meta_connector_mode': ('integrations', 'Meta connector mode', ['make', 'zapier', 'native_future']),
         }
         for code, (module, name, options) in policy_specs.items():
             definition, _ = PolicyDefinition.objects.get_or_create(code=code, defaults={'module': module, 'name': name, 'data_type': 'choice'})
@@ -196,6 +204,26 @@ class Command(BaseCommand):
                 if selected is None:
                     selected = option
             CompanyPolicy.objects.get_or_create(company=company, policy_definition=definition, is_active=True, defaults={'selected_option': selected, 'value': {}})
+
+        # JSON / duration policies (no fixed option list)
+        json_policy_specs = [
+            ('retry_attempt_window', 'sla', 'Retry attempt window before escalation', {'minutes': 60}),
+            ('finance_approval_reason_required', 'marketing', 'Finance approval statuses that require a reason', {'semi_approved': True, 'not_approved': True}),
+        ]
+        stage_sla_defaults = {
+            'stage_sla_fresh': 60,
+            'stage_sla_interested': 1440,
+            'stage_sla_not_reached': 120,
+            'stage_sla_follow_up': 2880,
+            'stage_sla_meeting': 2880,
+            'stage_sla_frozen': 43200,
+        }
+        for code, minutes in stage_sla_defaults.items():
+            json_policy_specs.append((code, 'sla', f'SLA duration for stage {code.replace("stage_sla_", "")}', {'minutes': minutes}))
+
+        for code, module, name, default_value in json_policy_specs:
+            definition, _ = PolicyDefinition.objects.get_or_create(code=code, defaults={'module': module, 'name': name, 'data_type': 'json'})
+            CompanyPolicy.objects.get_or_create(company=company, policy_definition=definition, is_active=True, defaults={'value': default_value})
 
     def seed_admin(self, company, email, password):
         user, created = User.objects.get_or_create(email=email, defaults={'username': email, 'company': company, 'is_staff': True, 'is_superuser': True})

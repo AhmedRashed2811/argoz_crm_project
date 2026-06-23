@@ -208,6 +208,22 @@ class CampaignBudgetService:
         return campaign.total_budget
 
 
+class CampaignStatusService:
+    """Date-based campaign lifecycle status (Doc 2 §5.2 / Doc 3 §15).
+
+    Approval status and lifecycle status are independent; this service only
+    derives Coming / Active / Ended from the campaign start/end dates.
+    """
+
+    @staticmethod
+    def get_status(campaign: Campaign) -> str:
+        return campaign.update_lifecycle_status(save=False)
+
+    @staticmethod
+    def refresh_status(campaign: Campaign) -> str:
+        return campaign.update_lifecycle_status(save=True)
+
+
 class CampaignApprovalService:
     @staticmethod
     @transaction.atomic
