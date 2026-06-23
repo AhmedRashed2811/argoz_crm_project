@@ -1,4 +1,4 @@
-from django.db.models import Count
+from django.db.models import Count, Q
 from apps.accounts.models import SalesProfile, Team
 from apps.distribution.models import RotationPointer
 
@@ -14,7 +14,7 @@ def get_eligible_sales_profiles(company, team=None, language=None):
 def get_least_busy_team(company):
     """Retrieves the team with the minimum active leads count."""
     return Team.objects.filter(company=company, is_active=True).annotate(
-        active_leads=Count('current_leads')
+        active_leads=Count('current_leads', filter=Q(current_leads__status='active'))
     ).order_by('active_leads', 'sort_order', 'name').first()
 
 def get_active_teams(company):

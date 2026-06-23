@@ -130,11 +130,15 @@ class RetryTeamEscalationStrategy(ByTurnSequentialStrategy):
     code = 'retry_team_escalation'
     name = 'Retry Attempts and Team Escalation'
 
+    def _attempt_due_at(self, lead):
+        from apps.core.services.policies import PolicyResolver
+        return timezone.now() + PolicyResolver.get_retry_attempt_window(lead.company)
+
     @transaction.atomic
     def assign(self, *, lead, actor=None, scope_mode='team_then_salesman', team=None, language=None, **kwargs):
         from apps.core.services.policies import PolicyResolver
         from apps.distribution.selectors import get_last_assignment_attempt
-        n = int(PolicyResolver.get(lead.company, 'retry_attempts_per_team', default=3))
+        n = max(1, PolicyResolver.get_int(lead.company, 'retry_attempts_per_team', default=3))
         
         last_attempt = get_last_assignment_attempt(lead)
         
@@ -168,7 +172,7 @@ class RetryTeamEscalationStrategy(ByTurnSequentialStrategy):
                 salesman=salesman,
                 attempt_no=1,
                 status='active',
-                due_at=timezone.now()
+                due_at=self._attempt_due_at(lead)
             )
             result = AssignmentResult(
                 lead=lead,
@@ -196,7 +200,8 @@ class RetryTeamEscalationStrategy(ByTurnSequentialStrategy):
                     # No salesmen available, trigger escalation to next team
                     last_attempt.attempt_no = n # Force escalation trigger in the next block
                 else:
-                    # Find next sequential salesman in same team
+                    # Find next sequential salesman in same team.  If there is more than
+                    # one eligible salesman, do not immediately route back to the same user.
                     next_salesman = None
                     for idx, cand in enumerate(candidates):
                         if cand.user == last_attempt.salesman:
@@ -204,6 +209,8 @@ class RetryTeamEscalationStrategy(ByTurnSequentialStrategy):
                             break
                     if not next_salesman:
                         next_salesman = candidates[0].user
+                    if len(candidates) > 1 and next_salesman == last_attempt.salesman:
+                        next_salesman = next(c.user for c in candidates if c.user != last_attempt.salesman)
                         
                     new_attempt = AssignmentAttempt.objects.create(
                         lead=lead,
@@ -211,7 +218,7 @@ class RetryTeamEscalationStrategy(ByTurnSequentialStrategy):
                         salesman=next_salesman,
                         attempt_no=last_attempt.attempt_no + 1,
                         status='active',
-                        due_at=timezone.now()
+                        due_at=self._attempt_due_at(lead)
                     )
                     result = AssignmentResult(
                         lead=lead,
@@ -253,7 +260,7 @@ class RetryTeamEscalationStrategy(ByTurnSequentialStrategy):
                 salesman=salesman,
                 attempt_no=1,
                 status='active',
-                due_at=timezone.now()
+                due_at=self._attempt_due_at(lead)
             )
             result = AssignmentResult(
                 lead=lead,

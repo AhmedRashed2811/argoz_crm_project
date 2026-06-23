@@ -29,13 +29,51 @@ class UUIDBaseModel(models.Model):
         abstract = True
 
 
+
+class BaseTenantModel(UUIDBaseModel):
+    """Abstract contract for company-scoped business records.
+
+    New CRM business models should inherit from this class so tenant ownership,
+    timestamps, creator/updater accountability, and archive behaviour stay
+    consistent.  Existing models that already define ``company`` directly are
+    still compatible with the selectors/services.
+    """
+    company = models.ForeignKey('companies.Company', on_delete=models.CASCADE)
+    is_active = models.BooleanField(default=True)
+    archived_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        abstract = True
+
+    def archive(self, *, user=None, save=True):
+        self.is_active = False
+        self.is_archived = True
+        self.archived_at = timezone.now()
+        if user is not None:
+            self.updated_by = user
+        if save:
+            self.save(update_fields=['is_active', 'is_archived', 'archived_at', 'updated_by', 'updated_at'])
+        return self
+
 class ActiveQuerySet(models.QuerySet):
     def active(self):
-        return self.filter(is_archived=False, is_deleted=False)
+        filters = {}
+        field_names = {field.name for field in self.model._meta.get_fields()}
+        if 'is_archived' in field_names:
+            filters['is_archived'] = False
+        if 'is_deleted' in field_names:
+            filters['is_deleted'] = False
+        if 'is_active' in field_names:
+            filters['is_active'] = True
+        if 'archived_at' in field_names:
+            filters['archived_at__isnull'] = True
+        return self.filter(**filters)
 
     def for_company(self, company):
         if company is None:
             return self
+        if 'company' not in {field.name for field in self.model._meta.get_fields()}:
+            return self.none()
         return self.filter(company=company)
 
 

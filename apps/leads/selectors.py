@@ -3,6 +3,7 @@ from apps.leads.models import Lead, LeadSource, LeadStage, HowDidYouKnowOption
 from apps.accounts.models import User, Team, BrokerProfile
 from apps.companies.models import Language
 from apps.marketing.models import Campaign
+from apps.permissions_engine.services.engine import PermissionEngine
 
 def get_leads_list(company, search_query=None, stage_id=None, source_id=None, status=None, user=None):
     """
@@ -26,9 +27,9 @@ def get_leads_list(company, search_query=None, stage_id=None, source_id=None, st
         qs = qs.filter(status=status)
         
     if user:
-        if user.has_perm('leads.view_all'):
+        if PermissionEngine.has_perm(user, 'leads.view_all'):
             return qs.distinct()
-        if user.has_perm('leads.view_team'):
+        if PermissionEngine.has_perm(user, 'leads.view_team'):
             return qs.filter(current_team__memberships__user=user).distinct()
         return qs.filter(current_salesman=user).distinct()
         

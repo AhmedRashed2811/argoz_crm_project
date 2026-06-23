@@ -4,6 +4,7 @@ from django.utils import timezone
 from apps.companies.models import Company
 from apps.accounts.models import User, SalesProfile
 from apps.leads.models import LeadSource, LeadStage
+from apps.marketing.models import Campaign
 from apps.integrations.models import (
     CompanyIntegration, TenantWebhookEndpoint, ExternalFormMapping,
     IntegrationFieldMapping, IncomingWebhookPayload, IntegrationProvider
@@ -24,11 +25,18 @@ class MetaWebhookTestCase(TestCase):
         
         self.source = LeadSource.objects.create(company=self.company, code='campaign', name='Campaign')
         self.stage = LeadStage.objects.create(company=self.company, code='fresh', name='Fresh')
+        self.campaign = Campaign.objects.create(
+            company=self.company,
+            name='Meta Campaign',
+            start_date='2026-06-01',
+            end_date='2026-06-30',
+        )
         
         self.form_mapping = ExternalFormMapping.objects.create(
             endpoint=self.endpoint,
             external_form_id='meta-form-123',
             lead_source=self.source,
+            campaign=self.campaign,
             default_origin='direct'
         )
         

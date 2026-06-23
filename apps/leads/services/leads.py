@@ -18,6 +18,10 @@ def normalize_phone(country_code, number):
     return f'{cc}{num}'
 
 
+def normalize_source_code(source_code: str) -> str:
+    return (source_code or '').strip().lower().replace('-', '_').replace(' ', '_')
+
+
 class LeadService:
     @staticmethod
     def create_lead(*, company, full_name, phone_country_code, phone_number, source, origin='direct', actor=None, **kwargs):
@@ -55,6 +59,57 @@ class LeadService:
                 LeadService._create_attribution(lead, campaign, kwargs.get('metadata', {}))
 
             return lead, True
+
+    @staticmethod
+    def create_lead_from_source(*, company, full_name, phone_country_code='+20', phone_number='', source,
+                                origin=None, actor=None, metadata=None, **kwargs):
+        """Create a lead and immediately apply the document's source-specific backend workflow.
+
+        This keeps lead creation, duplicate handling, attribution, assignment, and SLA start
+        in one transaction-safe service entry point for web views, imports, and integrations.
+        """
+        metadata = metadata or {}
+        source_code = normalize_source_code(getattr(source, 'code', metadata.get('source_code', '')))
+        if origin is None:
+            origin = Lead.ORIGIN_BROKER if source_code == 'broker' else Lead.ORIGIN_DIRECT
+
+        # Minimal backend validations from the functional document.
+        if getattr(source, 'requires_how_did_you_know', False) and not (kwargs.get('how_did_you_know') or metadata.get('how_did_you_know')):
+            raise ValueError('This lead source requires a "How did you know us" value. The Website option must be available in master data.')
+        if source_code == 'exhibition' and not metadata.get('salesman'):
+            raise ValueError('Exhibition leads must be manually assigned to a salesman and cannot remain unassigned.')
+        if source_code == 'referral' and not metadata.get('referrer_name'):
+            raise ValueError('Referral leads must capture the referrer name as free text.')
+        if source_code == 'campaign' and not (kwargs.get('campaign') or metadata.get('campaign')):
+            raise ValueError('Campaign leads must be attributed to a campaign.')
+        if source_code == 'walkin' and metadata.get('how_did_you_know_name') == '':
+            raise ValueError('Walk-in leads must capture how the visitor knew the company.')
+        if source_code == 'call_center' and not (metadata.get('caller_source') or metadata.get('how_did_you_know') or kwargs.get('how_did_you_know')):
+            raise ValueError('Call Center leads must capture caller source information.')
+
+        if metadata.get('campaign') and not kwargs.get('campaign'):
+            kwargs['campaign'] = metadata['campaign']
+        if metadata.get('how_did_you_know') and not kwargs.get('how_did_you_know'):
+            kwargs['how_did_you_know'] = metadata['how_did_you_know']
+
+        # Store source-specific metadata on the lead for audit/reporting.
+        existing_meta = kwargs.pop('metadata', {}) or {}
+        merged_metadata = {**existing_meta, **metadata, 'source_workflow': source_code}
+
+        lead, created = LeadService.create_lead(
+            company=company,
+            full_name=full_name,
+            phone_country_code=phone_country_code,
+            phone_number=phone_number,
+            source=source,
+            origin=origin,
+            actor=actor,
+            metadata=merged_metadata,
+            **kwargs,
+        )
+        if created:
+            LeadService.assign_lead_by_source(lead=lead, actor=actor, source_code=source_code, metadata=merged_metadata)
+        return lead, created
 
     @staticmethod
     def _create_attribution(lead, campaign, metadata):
@@ -95,6 +150,7 @@ class LeadService:
     def assign_lead_by_source(*, lead, actor, source_code, metadata=None):
         """Source-aware assignment that applies all business rules from Doc 2 Section 4.2."""
         metadata = metadata or {}
+        source_code = normalize_source_code(source_code)
         company = lead.company
 
         # --- a) Self-Generated ---
@@ -103,6 +159,8 @@ class LeadService:
 
         # --- b) Campaign ---
         if source_code == 'campaign':
+            if not (lead.campaign_id or metadata.get('campaign')):
+                raise ValueError('Campaign leads must store campaign attribution.')
             strategy = PolicyResolver.get_distribution_strategy_code(company, 'campaign')
             dist_mode = metadata.get('distribution_mode', 'automatic')
             if dist_mode == 'manual':
@@ -120,6 +178,8 @@ class LeadService:
 
         # --- e) Call Center ---
         if source_code == 'call_center':
+            if not (metadata.get('caller_source') or metadata.get('how_did_you_know')):
+                raise ValueError('Call Center leads must capture caller_source or how_did_you_know.')
             strategy = PolicyResolver.get_distribution_strategy_code(company, 'call_center')
             dist_mode = metadata.get('distribution_mode', 'automatic')
             if dist_mode == 'manual':
@@ -137,6 +197,8 @@ class LeadService:
 
         # --- g) Referral ---
         if source_code == 'referral':
+            if not metadata.get('referrer_name'):
+                raise ValueError('Referral leads must capture referrer_name.')
             strategy = PolicyResolver.get_distribution_strategy_code(company, 'referral')
             dist_mode = metadata.get('distribution_mode', 'automatic')
             if dist_mode == 'manual':
@@ -233,7 +295,7 @@ class LeadService:
         mode = PolicyResolver.get_existing_client_mode(lead.company)
         existing_phone = metadata.get('existing_client_phone', '')
 
-        if mode == 'retain' and existing_phone:
+        if mode in ('retain', 'preserve_original_salesman') and existing_phone:
             # Look up previous salesman for this phone number
             from apps.leads.selectors import get_duplicate_lead_for_existing_client
             previous_lead = get_duplicate_lead_for_existing_client(lead.company, existing_phone, exclude_lead_id=lead.pk)

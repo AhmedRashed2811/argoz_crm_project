@@ -24,7 +24,7 @@ class DistributionService:
                 strategy_code = PolicyResolver.get_distribution_strategy_code(
                     lead.company, source_code, cls.DEFAULT_STRATEGY,
                 )
-        scope_mode = scope_mode or PolicyResolver.get_code(lead.company, 'lead_distribution_scope_mode', cls.DEFAULT_SCOPE)
+        scope_mode = scope_mode or PolicyResolver.get_distribution_scope_mode(lead.company, cls.DEFAULT_SCOPE)
         strategy = DistributionStrategyRegistry.get(strategy_code)
         result = strategy.assign(lead=lead, actor=actor, scope_mode=scope_mode, team=team, salesman=salesman)
         AuditService.log(company=lead.company, actor=actor, action='lead.assigned', obj=lead, after={

@@ -23,3 +23,20 @@ class PolicyResolverTestCase(TestCase):
         )
         val = PolicyResolver.get_code(self.company, 'lead_auto_distribution_strategy')
         self.assertEqual(val, 'by_turn')
+
+
+    def test_documented_policy_alias_reads_legacy_value(self):
+        CompanyPolicy.objects.create(
+            company=self.company,
+            policy_definition=self.defn,
+            selected_option=self.opt2,
+            is_active=True,
+        )
+        self.assertEqual(
+            PolicyResolver.get_distribution_strategy_code(self.company),
+            'by_turn',
+        )
+        self.assertEqual(
+            PolicyResolver.get_code(self.company, 'automatic_distribution_strategy'),
+            'by_turn',
+        )

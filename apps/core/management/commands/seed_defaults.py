@@ -8,6 +8,7 @@ Usage:
 from django.core.management.base import BaseCommand
 from django.contrib.auth.models import Group, Permission
 from django.db import transaction
+from apps.core.permissions import all_documented_permission_codes
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +139,42 @@ DEFAULT_POLICIES = [
         'options': [],
     },
 ]
+
+
+# Additional canonical policy definitions from the technical document.  The
+# resolver also supports legacy names, but seeding these codes makes new
+# installations match the documents directly.
+DEFAULT_POLICIES.extend([
+    {
+        'code': 'automatic_distribution_strategy', 'module': 'distribution', 'name': 'Automatic Distribution Strategy', 'data_type': 'choice',
+        'options': [
+            {'code': 'round_robin_load_balanced', 'label': 'Round Robin (Load Balanced)', 'sort_order': 0},
+            {'code': 'by_turn', 'label': 'By Turn (Sequential)', 'sort_order': 1},
+            {'code': 'retry_team_escalation', 'label': 'Retry Attempts and Team Escalation', 'sort_order': 2},
+        ],
+    },
+    {
+        'code': 'distribution_scope_mode', 'module': 'distribution', 'name': 'Distribution Scope Mode', 'data_type': 'choice',
+        'options': [
+            {'code': 'all_salesmen', 'label': 'All Salesmen', 'sort_order': 0},
+            {'code': 'team_then_salesman', 'label': 'Team then Salesman', 'sort_order': 1},
+            {'code': 'team_then_sales_head', 'label': 'Team then Sales Head', 'sort_order': 2},
+        ],
+    },
+    {'code': 'sla_breach_action_broker', 'module': 'sla', 'name': 'SLA Breach Action for Broker Leads', 'data_type': 'choice', 'options': [{'code': 'manual_reassignment', 'label': 'Manual Reassignment', 'sort_order': 0}]},
+    {'code': 'retry_attempts_per_team', 'module': 'distribution', 'name': 'Retry Attempts Per Team', 'data_type': 'integer', 'options': []},
+    {'code': 'retry_attempt_window', 'module': 'distribution', 'name': 'Retry Attempt Window', 'data_type': 'duration', 'options': []},
+    {'code': 'origin_sla_direct', 'module': 'sla', 'name': 'Origin SLA - Direct Leads', 'data_type': 'duration', 'options': []},
+    {'code': 'origin_sla_broker', 'module': 'sla', 'name': 'Origin SLA - Broker Leads', 'data_type': 'duration', 'options': []},
+    {'code': 'stage_sla_fresh', 'module': 'sla', 'name': 'Stage SLA - Fresh', 'data_type': 'duration', 'options': []},
+    {'code': 'stage_sla_interested', 'module': 'sla', 'name': 'Stage SLA - Interested', 'data_type': 'duration', 'options': []},
+    {'code': 'stage_sla_not_reached', 'module': 'sla', 'name': 'Stage SLA - Not Reached', 'data_type': 'duration', 'options': []},
+    {'code': 'stage_sla_frozen', 'module': 'sla', 'name': 'Stage SLA - Frozen', 'data_type': 'duration', 'options': []},
+    {'code': 'reminder_mode_not_reached', 'module': 'sla', 'name': 'Reminder Mode for Not Reached Stage', 'data_type': 'choice', 'options': [{'code': 'automatic', 'label': 'Automatic', 'sort_order': 0}, {'code': 'manual', 'label': 'Manual', 'sort_order': 1}]},
+    {'code': 'campaign_budget_calculation_rule', 'module': 'marketing', 'name': 'Campaign Budget Calculation Rule', 'data_type': 'choice', 'options': [{'code': 'standard_total', 'label': 'Standard Total', 'sort_order': 0}, {'code': 'type_level_only', 'label': 'Type Level Only', 'sort_order': 1}, {'code': 'policy_custom', 'label': 'Policy Custom', 'sort_order': 2}]},
+    {'code': 'finance_approval_reason_required', 'module': 'marketing', 'name': 'Finance Approval Reason Required', 'data_type': 'json', 'options': []},
+    {'code': 'integration_meta_connector', 'module': 'integrations', 'name': 'Integration Meta Connector', 'data_type': 'choice', 'options': [{'code': 'make', 'label': 'Make', 'sort_order': 0}, {'code': 'zapier', 'label': 'Zapier', 'sort_order': 1}, {'code': 'native_future', 'label': 'Native Future', 'sort_order': 2}]},
+])
 
 # ---------------------------------------------------------------------------
 # Default Distribution Strategy Definitions (DB records)

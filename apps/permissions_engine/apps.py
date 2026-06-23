@@ -6,3 +6,6 @@ class PermissionsEngineConfig(AppConfig):
     name = 'apps.permissions_engine'
     label = 'permissions_engine'
     verbose_name = 'Permissions Engine'
+
+    def ready(self):
+        from . import signals  # noqa: F401

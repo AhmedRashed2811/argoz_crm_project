@@ -173,7 +173,7 @@ class SocialMediaAd(UUIDBaseModel):
 
 
 class SocialMediaPlatformLine(UUIDBaseModel):
-    PLATFORM_CHOICES = [('meta', 'Meta'), ('whatsapp', 'WhatsApp'), ('tiktok', 'TikTok'), ('linkedin', 'LinkedIn'), ('x', 'X'), ('google_ads', 'Google Ads')]
+    PLATFORM_CHOICES = [('meta', 'Meta'), ('facebook', 'Facebook'), ('instagram', 'Instagram'), ('whatsapp', 'WhatsApp'), ('tiktok', 'TikTok'), ('linkedin', 'LinkedIn'), ('x', 'X'), ('google_ads', 'Google Ads'), ('website', 'Website')]
     social_ad = models.ForeignKey(SocialMediaAd, on_delete=models.CASCADE, related_name='platform_lines')
     platform = models.CharField(max_length=40, choices=PLATFORM_CHOICES)
     budget = models.DecimalField(max_digits=14, decimal_places=2, default=0)

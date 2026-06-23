@@ -40,3 +40,12 @@ class PermissionsTestCase(TestCase):
         override.is_allowed = False
         override.save()
         self.assertFalse(PermissionEngine.has_perm(self.user, 'leads.view_lead'))
+
+
+    def test_documented_permission_alias(self):
+        CRMGroupTemplatePermission.objects.create(
+            group_template=self.template,
+            permission_codename='leads.create',
+            is_allowed=True,
+        )
+        self.assertTrue(PermissionEngine.has_perm(self.user, 'leads.create_lead'))

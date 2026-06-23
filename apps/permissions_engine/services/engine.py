@@ -1,5 +1,6 @@
 from django.contrib.auth.models import Permission
 from apps.permissions_engine.models import UserPermissionOverride, CRMGroupTemplatePermission
+from apps.core.permissions import permission_candidates
 
 
 class PermissionEngine:
@@ -15,24 +16,33 @@ class PermissionEngine:
             return False
         if user.is_superuser:
             return True
-        permission_code = cls.normalize(permission_code)
+        permission_codes = permission_candidates(cls.normalize(permission_code))
 
-        # 1. User specific override has top priority
-        override = UserPermissionOverride.objects.filter(user=user, permission_codename=permission_code).first()
-        if override is not None:
-            return override.is_allowed
+        # 1. User specific override has top priority.  An explicit deny on any
+        # compatible code wins over template/native permissions.
+        overrides = UserPermissionOverride.objects.filter(
+            user=user, permission_codename__in=permission_codes,
+        )
+        for override in overrides:
+            if not override.is_allowed:
+                return False
+        if overrides.filter(is_allowed=True).exists():
+            return True
 
         # 2. Template-based permissions from user profile default_group_template
         if hasattr(user, 'profile') and user.profile and user.profile.default_group_template:
-            tpl_perm = CRMGroupTemplatePermission.objects.filter(
+            tpl_perms = CRMGroupTemplatePermission.objects.filter(
                 group_template=user.profile.default_group_template,
-                permission_codename=permission_code
-            ).first()
-            if tpl_perm is not None:
-                return tpl_perm.is_allowed
+                permission_codename__in=permission_codes,
+            )
+            for tpl_perm in tpl_perms:
+                if not tpl_perm.is_allowed:
+                    return False
+            if tpl_perms.filter(is_allowed=True).exists():
+                return True
 
-        # 3. Fallback to native Django permissions (e.g. from Django Groups)
-        return user.has_perm(permission_code)
+        # 3. Fallback to native Django permissions (e.g. from Django Groups).
+        return any(user.has_perm(code) for code in permission_codes)
 
     @classmethod
     def effective_permissions(cls, user):
@@ -61,4 +71,10 @@ class PermissionEngine:
                 codes.add(override.permission_codename)
             else:
                 codes.discard(override.permission_codename)
-        return codes
+
+        # Expand aliases so callers can display/check either the document code
+        # or an older seeded code.
+        expanded = set(codes)
+        for code in list(codes):
+            expanded.update(permission_candidates(code))
+        return expanded

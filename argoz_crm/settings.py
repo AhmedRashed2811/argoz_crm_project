@@ -17,7 +17,7 @@ INSTALLED_APPS = [
     'apps.core',
     'apps.companies',
     'apps.accounts',
-    'apps.permissions_engine',
+    'apps.permissions_engine.apps.PermissionsEngineConfig',
     'apps.audit',
     'apps.notifications',
     'apps.leads',
@@ -61,20 +61,33 @@ TEMPLATES = [
 WSGI_APPLICATION = 'argoz_crm.wsgi.application'
 ASGI_APPLICATION = 'argoz_crm.asgi.application'
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'argoz_crm',
-        'USER': 'root',
-        'PASSWORD': '',
-        'HOST': '127.0.0.1',
-        'PORT': '3306',
-        'OPTIONS': {
-            'charset': 'utf8mb4',
-            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
-        },
+# Keep the existing MySQL/MariaDB configuration by default.
+# For local backend tests/CI, set DJANGO_DB_ENGINE=sqlite without changing code.
+if os.environ.get('DJANGO_DB_ENGINE', '').lower() == 'sqlite':
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': os.environ.get('SQLITE_NAME', str(BASE_DIR / 'db.sqlite3')),
+        }
     }
-}
+elif os.environ.get('DATABASE_URL'):
+    import dj_database_url
+    DATABASES = {'default': dj_database_url.parse(os.environ['DATABASE_URL'])}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.mysql',
+            'NAME': os.environ.get('MYSQL_DATABASE', 'argoz_crm'),
+            'USER': os.environ.get('MYSQL_USER', 'root'),
+            'PASSWORD': os.environ.get('MYSQL_PASSWORD', ''),
+            'HOST': os.environ.get('MYSQL_HOST', '127.0.0.1'),
+            'PORT': os.environ.get('MYSQL_PORT', '3306'),
+            'OPTIONS': {
+                'charset': 'utf8mb4',
+                'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+            },
+        }
+    }
 
 AUTH_USER_MODEL = 'accounts.User'
 

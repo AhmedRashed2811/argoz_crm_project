@@ -1,7 +1,7 @@
 from datetime import timedelta
 from django.db import transaction
 from django.utils import timezone
-from apps.leads.models import LeadStage
+from apps.leads.models import LeadStage, LeadStageHistory
 from apps.sla.models import SLADefinition, LeadSLAInstance
 from apps.distribution.services.distribution import DistributionService
 from apps.audit.services.audit import AuditService
@@ -17,6 +17,7 @@ STAGE_EXPIRY_BEHAVIOUR = {
     'interested':     {'distribution': 'per_policy', 'reminder': True},
     'not_interested': {'distribution': 'none',      'reminder': False, 'deactivate': True},
     'follow_up':      {'distribution': 'manual',    'reminder': True},
+    'followup':       {'distribution': 'manual',    'reminder': True},
     'meeting':        {'distribution': 'manual',    'reminder': True},
     'not_reached':    {'distribution': 'automatic', 'reminder': True},
     'frozen':         {'distribution': 'automatic', 'reminder': True, 'frozen_reactivation': True},
@@ -44,6 +45,12 @@ class SLAService:
         if not definition or not lead.current_stage:
             return None
         starts_at = timezone.now()
+        # A lead must have only one active SLA clock at a time.  New assignment
+        # or stage SLA start cancels previous active clocks without deleting
+        # their history.
+        LeadSLAInstance.objects.filter(lead=lead, status='active').update(
+            status='cancelled', processed_at=starts_at, updated_at=starts_at,
+        )
         sla_duration = cls._duration(definition)
         due_at = starts_at + sla_duration
         instance = LeadSLAInstance.objects.create(
@@ -67,9 +74,11 @@ class SLAService:
         from apps.distribution.models import AssignmentAttempt
         active_attempt = lead.assignment_attempts.filter(status='active').first()
         if active_attempt:
+            # Preserve AssignmentAttempt.due_at when retry/team escalation created it
+            # from retry_attempt_window.  The SLA due time and retry attempt due
+            # time can be different policy concepts.
             active_attempt.sla_instance = instance
-            active_attempt.due_at = due_at
-            active_attempt.save(update_fields=['sla_instance', 'due_at'])
+            active_attempt.save(update_fields=['sla_instance', 'updated_at'])
             
         return instance
 
@@ -132,16 +141,28 @@ class SLAService:
         return sla_instance
 
     @classmethod
-    def reset_for_rotation(cls, lead, *, assignment=None):
-        """Cancel all active SLAs for the lead, reset stage to Fresh, and start a new SLA."""
+    def reset_for_rotation(cls, lead, *, assignment=None, actor=None, reason='SLA rotation reset'):
+        """Cancel active SLAs, reset visible stage to Fresh, preserve history, and start Fresh SLA."""
         cls.cancel_active_slas(lead, reason='rotation_reset')
         fresh_stage = (
             LeadStage.objects.filter(company=lead.company, code='fresh').first()
             or LeadStage.objects.filter(company__isnull=True, code='fresh').first()
         )
-        if fresh_stage and lead.current_stage != fresh_stage:
+        old_stage = lead.current_stage
+        if fresh_stage and old_stage != fresh_stage:
             lead.current_stage = fresh_stage
-            lead.save(update_fields=['current_stage', 'updated_at'])
+            lead.status = 'active'
+            lead.save(update_fields=['current_stage', 'status', 'updated_at'])
+            LeadStageHistory.objects.create(
+                lead=lead, from_stage=old_stage, to_stage=fresh_stage,
+                changed_by=actor, reason=reason, metadata={'system_action': 'rotation_reset'},
+            )
+            AuditService.log(
+                company=lead.company, actor=actor, actor_type='system' if actor is None else 'user',
+                action='lead.stage_reset_fresh', obj=lead,
+                before={'stage': getattr(old_stage, 'code', None)}, after={'stage': fresh_stage.code},
+                metadata={'reason': reason},
+            )
         return cls.start_for_lead(lead, assignment=assignment)
 
     @classmethod
@@ -208,7 +229,7 @@ class SLAService:
             sla.status = 'processed'
             sla.processed_at = timezone.now()
             sla.save(update_fields=['status', 'processed_at', 'updated_at'])
-            AuditService.log(company=lead.company, actor_type='scheduler', action='sla.expired.deactivated', obj=lead, metadata={'sla_id': str(sla.id), 'stage': stage_code})
+            AuditService.log(company=lead.company, actor_type='system', action='sla.expired.deactivated', obj=lead, metadata={'sla_id': str(sla.id), 'stage': stage_code})
             return None
 
         # Manual-only stages (Follow-up, Meeting) → notify, don't auto-redistribute
@@ -229,16 +250,11 @@ class SLAService:
 
         if breach_action == 'automatic_redistribution':
             result = DistributionService.assign(lead=lead, actor=None, strategy_code=strategy_code)
-            # Reset to Fresh stage after rotation (Doc 2 rule)
-            fresh_stage = (
-                LeadStage.objects.filter(company=lead.company, code='fresh').first()
-                or LeadStage.objects.filter(company__isnull=True, code='fresh').first()
-            )
-            if fresh_stage:
-                lead.current_stage = fresh_stage
-                lead.save(update_fields=['current_stage', 'updated_at'])
             latest_assignment = lead.assignments.filter(is_current=True).first()
-            cls.start_for_lead(lead, assignment=latest_assignment)
+            # Universal document rule: after any SLA-triggered rotation the
+            # visible stage resets to Fresh, Fresh SLA restarts, and history is
+            # preserved.
+            cls.reset_for_rotation(lead, assignment=latest_assignment, reason='SLA expired redistribution')
             action = 'sla.expired.redistributed'
         else:
             result = None
@@ -264,7 +280,7 @@ class SLAService:
         sla.processed_at = timezone.now()
         sla.save(update_fields=['status', 'processed_at', 'updated_at'])
         AuditService.log(
-            company=lead.company, actor_type='scheduler', action=action,
+            company=lead.company, actor_type='system', action=action,
             obj=lead, metadata={'sla_id': str(sla.id), 'strategy_code': strategy_code, 'stage': stage_code},
         )
         return result

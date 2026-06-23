@@ -56,3 +56,4 @@ class DistributionStrategiesTestCase(TestCase):
         self.assertEqual(len(attempts), 2)
         self.assertEqual(attempts[0].attempt_no, 1)
         self.assertEqual(attempts[1].attempt_no, 2)
+        self.assertGreater(attempts[1].due_at, timezone.now())

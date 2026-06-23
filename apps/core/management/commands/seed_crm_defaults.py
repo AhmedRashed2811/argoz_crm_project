@@ -10,6 +10,7 @@ from apps.core.models import PolicyDefinition, PolicyOption, CompanyPolicy
 from apps.distribution.models import DistributionStrategyDefinition
 from apps.integrations.models import IntegrationProvider
 from apps.notifications.models import NotificationType
+from apps.core.permissions import all_documented_permission_codes
 
 PERMISSION_CATALOG = {
     'system': ['view_dashboard', 'manage_settings', 'run_maintenance_tasks', 'view_health_checks'],
@@ -33,7 +34,7 @@ PERMISSION_CATALOG = {
     'reports': ['view_executive', 'view_sales', 'view_marketing', 'view_finance', 'export', 'view_audit'],
 }
 
-ALL_CODES = [f'{app}.{codename}' for app, codenames in PERMISSION_CATALOG.items() for codename in codenames]
+ALL_CODES = sorted(set([f'{app}.{codename}' for app, codenames in PERMISSION_CATALOG.items() for codename in codenames] + all_documented_permission_codes()))
 
 GROUPS = {
     'System Admins': ALL_CODES,
