@@ -34,15 +34,8 @@ class SLAService:
 
     @classmethod
     def resolve_definition(cls, lead):
-        qs = SLADefinition.objects.filter(company=lead.company, is_active=True)
-        candidates = qs.filter(source=lead.source, stage=lead.current_stage, origin=lead.origin)
-        definition = (
-            candidates.first()
-            or qs.filter(stage=lead.current_stage, origin='').first()
-            or qs.filter(stage=lead.current_stage).first()
-            or qs.first()
-        )
-        return definition
+        from apps.sla.selectors import resolve_sla_definition
+        return resolve_sla_definition(lead)
 
     @classmethod
     def start_for_lead(cls, lead, assignment=None):
@@ -170,18 +163,11 @@ class SLAService:
     def process_expired_slas(cls, limit=100):
         now = timezone.now()
         count = 0
-        ids = list(
-            LeadSLAInstance.objects.filter(status='active', due_at__lte=now)
-            .order_by('due_at').values_list('id', flat=True)[:limit]
-        )
+        from apps.sla.selectors import get_expired_sla_instance_ids, get_sla_instance_for_update
+        ids = get_expired_sla_instance_ids(limit, now)
         for sla_id in ids:
             with transaction.atomic():
-                sla = (
-                    LeadSLAInstance.objects
-                    .select_for_update()
-                    .select_related('lead', 'lead__company', 'lead__current_stage', 'lead__source')
-                    .get(id=sla_id)
-                )
+                sla = get_sla_instance_for_update(sla_id)
                 if sla.status != 'active' or sla.due_at > timezone.now():
                     continue
                 cls.process_single_expired_sla(sla)

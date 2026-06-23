@@ -1,7 +1,7 @@
 from decimal import Decimal, InvalidOperation
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
-from django.http import JsonResponse
+from django.http import JsonResponse, Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse, reverse_lazy
 from django.views import View
@@ -17,6 +17,12 @@ from .models import (
 from .forms import CampaignForm, CampaignApprovalForm
 from .services.campaigns import CampaignBudgetService, CampaignApprovalService, CampaignService
 from apps.audit.services.audit import AuditService
+from .selectors import (
+    get_campaigns_list,
+    get_campaign_by_id,
+    get_campaign_with_budget_details,
+    get_pending_approvals_list,
+)
 
 
 def as_decimal(value, default='0'):
@@ -44,23 +50,14 @@ class CampaignListView(LoginRequiredMixin, PermissionRequiredMixin, ListView):
     permission_required = 'marketing.view_campaigns'
 
     def get_queryset(self):
-        qs = Campaign.objects.filter(is_archived=False).select_related('company').prefetch_related('type_selections').order_by('-created_at')
         user = self.request.user
-        if not user.is_superuser:
-            if user.company:
-                qs = qs.filter(company=user.company)
-            else:
-                qs = qs.none()
-        q = self.request.GET.get('q')
-        status = self.request.GET.get('status')
-        approval = self.request.GET.get('approval')
-        if q:
-            qs = qs.filter(name__icontains=q)
-        if status:
-            qs = qs.filter(lifecycle_status_cache=status)
-        if approval:
-            qs = qs.filter(approval_status=approval)
-        return qs
+        company = user.company if not user.is_superuser else None
+        return get_campaigns_list(
+            company=company,
+            search_query=self.request.GET.get('q'),
+            status=self.request.GET.get('status'),
+            approval=self.request.GET.get('approval')
+        )
 
 
 class CampaignDetailView(LoginRequiredMixin, DetailView):
@@ -68,9 +65,19 @@ class CampaignDetailView(LoginRequiredMixin, DetailView):
     template_name = 'marketing/campaign_detail.html'
     context_object_name = 'campaign'
 
+    def get_object(self, queryset=None):
+        user = self.request.user
+        company = user.company if not user.is_superuser else None
+        campaign = get_campaign_with_budget_details(company, self.kwargs.get('pk'))
+        if not campaign:
+            raise Http404("Campaign not found or access denied.")
+        return campaign
+
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
         CampaignBudgetService.refresh_total(self.object)
+        from apps.marketing.services.roi_service import ROIService
+        ROIService.recalculate_all_kpis(self.object)
         ctx['approval_form'] = CampaignApprovalForm()
         return ctx
 
@@ -282,14 +289,9 @@ class ApprovalQueueView(LoginRequiredMixin, PermissionRequiredMixin, ListView):
     permission_required = 'finance.approve_campaign'
 
     def get_queryset(self):
-        qs = Campaign.objects.exclude(approval_status='approved').order_by('-created_at')
         user = self.request.user
-        if not user.is_superuser:
-            if user.company:
-                qs = qs.filter(company=user.company)
-            else:
-                qs = qs.none()
-        return qs
+        company = user.company if not user.is_superuser else None
+        return get_pending_approvals_list(company)
 
     def post(self, request):
         campaign = get_object_or_404(Campaign, pk=request.POST.get('campaign_id'))
@@ -310,7 +312,9 @@ class ROIReportView(LoginRequiredMixin, TemplateView):
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
-        ctx['campaigns'] = Campaign.objects.all().order_by('-created_at')[:100]
+        user = self.request.user
+        company = user.company if not user.is_superuser else None
+        ctx['campaigns'] = get_campaigns_list(company)[:100]
         return ctx
 
 

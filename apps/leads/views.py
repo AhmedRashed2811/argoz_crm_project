@@ -11,6 +11,17 @@ from apps.marketing.models import Campaign, CampaignEvent, SocialMediaAd, Exhibi
 from .models import Lead, LeadSource, LeadStage, HowDidYouKnowOption, LeadActivity, LeadFollowUp, Meeting
 from .forms import LeadForm
 from .services.leads import LeadService, normalize_phone
+from .selectors import (
+    get_leads_list,
+    get_lead_stages,
+    get_lead_sources,
+    get_languages,
+    get_brokers,
+    get_campaigns,
+    get_how_options,
+    get_teams,
+    get_salesmen,
+)
 
 SOURCE_RULES = {
     'self_generated': {'title':'Self Generated', 'distribution':'Sales Head can assign within team or automatic within team. Salesman owns by default unless policy redistributes after SLA.', 'show':['self_owner_mode']},
@@ -32,35 +43,21 @@ class LeadListView(LoginRequiredMixin, PermissionRequiredMixin, ListView):
     permission_required = 'leads.view_own'
 
     def get_queryset(self):
-        qs = Lead.objects.select_related('source', 'current_stage', 'current_salesman', 'current_team', 'campaign').all()
-        q = self.request.GET.get('q')
-        stage = self.request.GET.get('stage')
-        source = self.request.GET.get('source')
-        status = self.request.GET.get('status')
-        if q:
-            qs = qs.filter(full_name__icontains=q) | qs.filter(phone_number__icontains=q)
-        if stage:
-            qs = qs.filter(current_stage_id=stage)
-        if source:
-            qs = qs.filter(source_id=source)
-        if status:
-            qs = qs.filter(status=status)
         user = self.request.user
-        if not user.is_superuser:
-            if user.company:
-                qs = qs.filter(company=user.company)
-            else:
-                qs = qs.none()
-        if user.has_perm('leads.view_all'):
-            return qs.distinct()
-        if user.has_perm('leads.view_team'):
-            return qs.filter(current_team__memberships__user=user).distinct()
-        return qs.filter(current_salesman=user).distinct()
+        company = user.company if not user.is_superuser else None
+        return get_leads_list(
+            company=company,
+            search_query=self.request.GET.get('q'),
+            stage_id=self.request.GET.get('stage'),
+            source_id=self.request.GET.get('source'),
+            status=self.request.GET.get('status'),
+            user=user
+        )
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
-        ctx['stages'] = LeadStage.objects.all()
-        ctx['sources'] = LeadSource.objects.all()
+        ctx['stages'] = get_lead_stages(None)
+        ctx['sources'] = get_lead_sources(None)
         return ctx
 
 
@@ -94,7 +91,7 @@ class LeadDetailView(LoginRequiredMixin, DetailView):
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
-        ctx['stages'] = LeadStage.objects.filter(company=self.object.company)
+        ctx['stages'] = get_lead_stages(self.object.company)
         return ctx
 
 
@@ -109,11 +106,11 @@ class LeadCreateView(LoginRequiredMixin, PermissionRequiredMixin, View):
         try:
             company = self._resolve_company(request)
             source = LeadSource.objects.get(pk=request.POST.get('source'))
-            stage = LeadStage.objects.filter(company=company, code='fresh').first() or LeadStage.objects.filter(company=company).first()
-            lang = Language.objects.filter(pk=request.POST.get('language')).first()
-            campaign = Campaign.objects.filter(pk=request.POST.get('campaign')).first()
-            broker = BrokerProfile.objects.filter(pk=request.POST.get('broker')).first()
-            how = HowDidYouKnowOption.objects.filter(pk=request.POST.get('how_did_you_know')).first()
+            stage = get_lead_stages(company).filter(code='fresh').first() or get_lead_stages(company).first()
+            lang = get_languages(company).filter(pk=request.POST.get('language')).first()
+            campaign = get_campaigns(company).filter(pk=request.POST.get('campaign')).first()
+            broker = get_brokers(company).filter(pk=request.POST.get('broker')).first()
+            how = get_how_options(company).filter(pk=request.POST.get('how_did_you_know')).first()
             metadata = {
                 'source_code': source.code,
                 'distribution_mode': request.POST.get('distribution_mode'),
@@ -142,8 +139,8 @@ class LeadCreateView(LoginRequiredMixin, PermissionRequiredMixin, View):
             )
             if created:
                 assignment_mode = request.POST.get('distribution_mode')
-                team = Team.objects.filter(pk=request.POST.get('manual_team')).first()
-                salesman = User.objects.filter(pk=request.POST.get('manual_salesman')).first()
+                team = get_teams(company).filter(pk=request.POST.get('manual_team')).first()
+                salesman = get_salesmen(company).filter(pk=request.POST.get('manual_salesman')).first()
                 if assignment_mode == 'manual' and (team or salesman):
                     LeadService.assign_lead(lead=lead, actor=request.user, strategy_code='manual_assignment', team=team, salesman=salesman)
                 elif assignment_mode == 'automatic':
@@ -174,14 +171,14 @@ class LeadCreateView(LoginRequiredMixin, PermissionRequiredMixin, View):
             company = user.company or companies.first()
         return {
             'companies': companies,
-            'sources': LeadSource.objects.filter(company=company) if company else LeadSource.objects.all(),
-            'stages': LeadStage.objects.filter(company=company) if company else LeadStage.objects.all(),
-            'languages': Language.objects.filter(company=company) if company else Language.objects.all(),
-            'brokers': BrokerProfile.objects.filter(company=company) if company else BrokerProfile.objects.all(),
-            'campaigns': Campaign.objects.filter(company=company) if company else Campaign.objects.all(),
-            'how_options': HowDidYouKnowOption.objects.filter(company=company) if company else HowDidYouKnowOption.objects.all(),
-            'teams': Team.objects.filter(company=company) if company else Team.objects.all(),
-            'salesmen': User.objects.filter(company=company, is_active=True) if company else User.objects.filter(is_active=True),
+            'sources': get_lead_sources(company),
+            'stages': get_lead_stages(company),
+            'languages': get_languages(company),
+            'brokers': get_brokers(company),
+            'campaigns': get_campaigns(company),
+            'how_options': get_how_options(company),
+            'teams': get_teams(company),
+            'salesmen': get_salesmen(company),
             'source_rules': SOURCE_RULES,
         }
 
@@ -216,5 +213,6 @@ def ajax_eligible_sales(request):
         company = Company.objects.first()
     if not company:
         return JsonResponse({'users': []})
-    users = User.objects.filter(company=company, is_active=True).order_by('first_name','email')[:100]
+    users = get_salesmen(company).order_by('first_name','email')[:100]
     return JsonResponse({'users':[{'id':str(u.id),'name':u.get_full_name() or u.email,'email':u.email} for u in users]})
+

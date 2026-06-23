@@ -1,11 +1,35 @@
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db.models import Count, Q, Avg, Sum, F
-from django.db.models.functions import TruncMonth, TruncWeek
 from django.utils import timezone
 from django.views.generic import TemplateView
-from apps.leads.models import Lead, LeadAssignment, LeadStageHistory, LeadFollowUp, Meeting
-from apps.marketing.models import Campaign, CampaignKPIResult, LeadCampaignAttribution
-from apps.sla.models import LeadSLAInstance
+from apps.leads.selectors import (
+    get_leads_report_queryset,
+    get_lead_stage_distribution,
+    get_lead_trend,
+    get_salesman_performance,
+    get_lead_source_breakdown,
+    get_lead_stage_funnel,
+    get_lead_followups_queryset,
+    get_meetings_queryset,
+    get_assignments_this_month,
+)
+from apps.sla.selectors import (
+    get_sla_instances,
+    get_sla_compliance_rate,
+)
+from apps.marketing.selectors import (
+    get_campaigns_report_queryset,
+    get_campaign_kpi_results,
+    get_top_campaigns,
+    get_campaign_source_leads,
+    get_campaign_platform_performance,
+    get_budget_by_approval,
+    get_monthly_spend,
+    get_pending_campaigns_detail,
+    get_average_cost_per_lead,
+    get_campaign_review_queue,
+    get_total_campaign_budget,
+    get_approved_campaign_budget,
+)
 
 
 class ExecutiveReportView(LoginRequiredMixin, TemplateView):
@@ -17,36 +41,29 @@ class ExecutiveReportView(LoginRequiredMixin, TemplateView):
         now = timezone.now()
 
         # Lead pipeline summary
-        lead_qs = Lead.objects.filter(company=company) if company else Lead.objects.all()
+        lead_qs = get_leads_report_queryset(company)
         ctx['total_leads'] = lead_qs.count()
         ctx['active_leads'] = lead_qs.filter(status='active').count()
         ctx['inactive_leads'] = lead_qs.filter(status='inactive').count()
         ctx['leads_this_month'] = lead_qs.filter(created_at__month=now.month, created_at__year=now.year).count()
 
         # Lead stage distribution
-        ctx['stage_distribution'] = list(
-            lead_qs.filter(status='active').values(stage_name=F('current_stage__name'))
-            .annotate(count=Count('id')).order_by('-count')
-        )
+        ctx['stage_distribution'] = get_lead_stage_distribution(company)
 
         # SLA summary
-        sla_qs = LeadSLAInstance.objects.filter(lead__company=company) if company else LeadSLAInstance.objects.all()
+        sla_qs = get_sla_instances(company)
         ctx['open_sla_count'] = sla_qs.filter(status='active').count()
         ctx['expired_sla_count'] = sla_qs.filter(status__in=['expired', 'processed']).count()
         ctx['satisfied_sla_count'] = sla_qs.filter(status='satisfied').count()
 
         # Campaign summary
-        camp_qs = Campaign.objects.filter(company=company) if company else Campaign.objects.all()
-        ctx['active_campaigns'] = camp_qs.filter(lifecycle_status_cache='active', is_archived=False).count()
-        ctx['pending_approvals'] = camp_qs.filter(approval_status='pending', is_archived=False).count()
-        ctx['total_campaign_budget'] = camp_qs.filter(is_archived=False).aggregate(total=Sum('total_budget'))['total'] or 0
+        camp_qs = get_campaigns_report_queryset(company)
+        ctx['active_campaigns'] = camp_qs.filter(lifecycle_status_cache='active').count()
+        ctx['pending_approvals'] = camp_qs.filter(approval_status='pending').count()
+        ctx['total_campaign_budget'] = get_total_campaign_budget(company)
 
         # Lead trend (last 12 weeks)
-        ctx['lead_trend'] = list(
-            lead_qs.filter(created_at__gte=now - timezone.timedelta(weeks=12))
-            .annotate(week=TruncWeek('created_at'))
-            .values('week').annotate(count=Count('id')).order_by('week')
-        )
+        ctx['lead_trend'] = get_lead_trend(company, now - timezone.timedelta(weeks=12))
 
         return ctx
 
@@ -58,54 +75,30 @@ class SalesReportView(LoginRequiredMixin, TemplateView):
         ctx = super().get_context_data(**kwargs)
         company = self.request.user.company
         now = timezone.now()
-        lead_qs = Lead.objects.filter(company=company) if company else Lead.objects.all()
 
         # Per-salesman performance
-        ctx['salesman_performance'] = list(
-            lead_qs.filter(status='active', current_salesman__isnull=False)
-            .values(salesman_name=F('current_salesman__email'))
-            .annotate(
-                total=Count('id'),
-                active=Count('id', filter=Q(status='active')),
-            )
-            .order_by('-total')[:20]
-        )
+        ctx['salesman_performance'] = get_salesman_performance(company)
 
         # Per-source lead counts
-        ctx['source_breakdown'] = list(
-            lead_qs.values(source_name=F('source__name'))
-            .annotate(count=Count('id')).order_by('-count')
-        )
+        ctx['source_breakdown'] = get_lead_source_breakdown(company)
 
         # Stage conversion funnel
-        ctx['stage_funnel'] = list(
-            lead_qs.filter(status='active')
-            .values(stage_name=F('current_stage__name'), stage_order=F('current_stage__sort_order'))
-            .annotate(count=Count('id')).order_by('stage_order')
-        )
+        ctx['stage_funnel'] = get_lead_stage_funnel(company)
 
         # Follow-up/Meeting summary this month
-        followup_qs = LeadFollowUp.objects.filter(lead__company=company) if company else LeadFollowUp.objects.all()
+        followup_qs = get_lead_followups_queryset(company)
         ctx['followups_this_month'] = followup_qs.filter(created_at__month=now.month, created_at__year=now.year).count()
         ctx['followups_pending'] = followup_qs.filter(status='pending').count()
 
-        meeting_qs = Meeting.objects.filter(lead__company=company) if company else Meeting.objects.all()
+        meeting_qs = get_meetings_queryset(company)
         ctx['meetings_this_month'] = meeting_qs.filter(created_at__month=now.month, created_at__year=now.year).count()
         ctx['meetings_completed'] = meeting_qs.filter(status='completed').count()
 
         # SLA compliance: % of satisfied vs total expired+satisfied
-        sla_qs = LeadSLAInstance.objects.filter(lead__company=company) if company else LeadSLAInstance.objects.all()
-        total_resolved = sla_qs.filter(status__in=['satisfied', 'expired', 'processed']).count()
-        satisfied = sla_qs.filter(status='satisfied').count()
-        ctx['sla_compliance_rate'] = round(satisfied / total_resolved * 100, 1) if total_resolved else 0
+        ctx['sla_compliance_rate'] = get_sla_compliance_rate(company)
 
         # Assignment distribution this month
-        ctx['assignments_this_month'] = list(
-            LeadAssignment.objects.filter(
-                lead__company=company, created_at__month=now.month, created_at__year=now.year,
-            ).values(type=F('assignment_type'))
-            .annotate(count=Count('id')).order_by('-count')
-        ) if company else []
+        ctx['assignments_this_month'] = get_assignments_this_month(company, now.year, now.month)
 
         return ctx
 
@@ -116,44 +109,30 @@ class MarketingReportView(LoginRequiredMixin, TemplateView):
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
         company = self.request.user.company
-        camp_qs = Campaign.objects.filter(company=company, is_archived=False) if company else Campaign.objects.filter(is_archived=False)
+
+        # Refresh metrics for active campaigns to guarantee accuracy
+        from apps.marketing.services.roi_service import ROIService
+        camp_qs = get_campaigns_report_queryset(company)
+        for campaign in camp_qs.filter(lifecycle_status_cache='active'):
+            ROIService.recalculate_all_kpis(campaign)
 
         # Campaign overview
         ctx['total_campaigns'] = camp_qs.count()
         ctx['active_campaigns'] = camp_qs.filter(lifecycle_status_cache='active').count()
-        ctx['budget_total'] = camp_qs.aggregate(total=Sum('total_budget'))['total'] or 0
-        ctx['budget_approved'] = camp_qs.filter(approval_status='approved').aggregate(total=Sum('total_budget'))['total'] or 0
+        ctx['budget_total'] = get_total_campaign_budget(company)
+        ctx['budget_approved'] = get_approved_campaign_budget(company)
 
         # Per-campaign KPIs
-        ctx['campaign_kpis'] = list(
-            CampaignKPIResult.objects.filter(campaign__company=company)
-            .values(campaign_name=F('campaign__name'), metric=F('metric_code'))
-            .annotate(total_value=Sum('metric_value'))
-            .order_by('campaign_name', 'metric')
-        ) if company else []
+        ctx['campaign_kpis'] = get_campaign_kpi_results(company)
 
         # Top campaigns by lead count
-        ctx['top_campaigns'] = list(
-            camp_qs.annotate(
-                lead_count=Count('lead_attributions'),
-                total_budget_val=F('total_budget'),
-            ).order_by('-lead_count')[:10]
-        )
+        ctx['top_campaigns'] = get_top_campaigns(company, 10)
 
         # Leads per source from campaigns
-        ctx['campaign_source_leads'] = list(
-            LeadCampaignAttribution.objects.filter(campaign__company=company)
-            .values(campaign_type_label=F('campaign_type'))
-            .annotate(count=Count('id')).order_by('-count')
-        ) if company else []
+        ctx['campaign_source_leads'] = get_campaign_source_leads(company)
 
         # Platform performance (social media)
-        ctx['platform_performance'] = list(
-            LeadCampaignAttribution.objects.filter(campaign__company=company)
-            .exclude(platform='')
-            .values('platform')
-            .annotate(leads=Count('id')).order_by('-leads')
-        ) if company else []
+        ctx['platform_performance'] = get_campaign_platform_performance(company)
 
         return ctx
 
@@ -164,40 +143,20 @@ class FinanceReportView(LoginRequiredMixin, TemplateView):
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
         company = self.request.user.company
-        camp_qs = Campaign.objects.filter(company=company, is_archived=False) if company else Campaign.objects.filter(is_archived=False)
 
         # Budget summary by approval status
-        ctx['budget_by_approval'] = list(
-            camp_qs.values('approval_status')
-            .annotate(total=Sum('total_budget'), count=Count('id'))
-            .order_by('-total')
-        )
+        ctx['budget_by_approval'] = get_budget_by_approval(company)
 
         # Monthly spend trend (budget of campaigns that started each month)
-        ctx['monthly_spend'] = list(
-            camp_qs.annotate(month=TruncMonth('start_date'))
-            .values('month').annotate(budget=Sum('total_budget'))
-            .order_by('month')
-        )
+        ctx['monthly_spend'] = get_monthly_spend(company)
 
         # Pending approvals detail
-        ctx['pending_campaigns'] = list(
-            camp_qs.filter(approval_status='pending')
-            .values('id', 'name', 'total_budget', 'start_date', 'end_date')
-            .order_by('-total_budget')
-        )
+        ctx['pending_campaigns'] = get_pending_campaigns_detail(company)
 
         # Average cost per lead across all approved campaigns
-        approved = camp_qs.filter(approval_status='approved')
-        ctx['avg_cost_per_lead'] = CampaignKPIResult.objects.filter(
-            campaign__in=approved, metric_code='cost_per_lead',
-        ).aggregate(avg=Avg('metric_value'))['avg'] or 0
+        ctx['avg_cost_per_lead'] = get_average_cost_per_lead(company)
 
         # Finance queue (semi_approved + not_approved)
-        ctx['review_queue'] = list(
-            camp_qs.filter(approval_status__in=['semi_approved', 'not_approved'])
-            .values('id', 'name', 'total_budget', 'approval_status')
-            .order_by('-updated_at')[:20]
-        )
+        ctx['review_queue'] = get_campaign_review_queue(company, 20)
 
         return ctx

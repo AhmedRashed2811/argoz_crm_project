@@ -82,57 +82,6 @@ class CampaignApprovalService:
         return campaign
 
 
-class CampaignROIService:
-    @staticmethod
-    def refresh_basic_metrics(campaign: Campaign):
-        lead_count = campaign.lead_attributions.count() or campaign.leads.count()
-        CampaignKPIResult.objects.update_or_create(
-            campaign=campaign, metric_code='leads',
-            defaults={'metric_value': lead_count},
-        )
-        if lead_count and campaign.total_budget:
-            cpl = campaign.total_budget / lead_count
-            CampaignKPIResult.objects.update_or_create(
-                campaign=campaign, metric_code='cost_per_lead',
-                defaults={'metric_value': cpl},
-            )
-
-        # --- Attendee metrics for events ---
-        total_attendees = 0
-        for event in campaign.events.all():
-            attendees = event.target_attendees or 0
-            total_attendees += attendees
-        if total_attendees:
-            CampaignKPIResult.objects.update_or_create(
-                campaign=campaign, metric_code='attendees',
-                defaults={'metric_value': total_attendees},
-            )
-            if campaign.total_budget:
-                cpa = campaign.total_budget / total_attendees
-                CampaignKPIResult.objects.update_or_create(
-                    campaign=campaign, metric_code='cost_per_attendee',
-                    defaults={'metric_value': cpa},
-                )
-
-        # --- Platform performance ---
-        for ad in campaign.social_ads.all():
-            for platform_line in ad.platform_lines.all():
-                platform_leads = LeadCampaignAttribution.objects.filter(
-                    campaign=campaign, platform=platform_line.platform,
-                ).count()
-                metric_key = f'platform_{platform_line.platform}_leads'
-                CampaignKPIResult.objects.update_or_create(
-                    campaign=campaign, metric_code=metric_key,
-                    defaults={'metric_value': platform_leads},
-                )
-                if platform_line.budget and platform_leads:
-                    CampaignKPIResult.objects.update_or_create(
-                        campaign=campaign, metric_code=f'platform_{platform_line.platform}_cpl',
-                        defaults={'metric_value': platform_line.budget / platform_leads},
-                    )
-
-        return lead_count
-
 
 class CampaignService:
     @staticmethod

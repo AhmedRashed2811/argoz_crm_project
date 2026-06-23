@@ -42,3 +42,79 @@ class CampaignBudgetTestCase(TestCase):
         new_camp = CampaignService.duplicate_campaign(self.campaign)
         self.assertEqual(new_camp.name, 'Summer Campaign (Copy)')
         self.assertEqual(new_camp.events.count(), 1)
+
+    def test_roi_calculations(self):
+        from apps.marketing.services.roi_service import ROIService
+        from apps.marketing.models import CampaignEvent, SocialMediaAd, SocialMediaPlatformLine, LeadCampaignAttribution, CampaignKPIResult
+        from apps.leads.models import Lead
+        
+        # Setup budget
+        CampaignEvent.objects.create(
+            campaign=self.campaign,
+            event_name='Launch',
+            venue_place='HQ',
+            event_date='2026-06-15',
+            budget=Decimal('1000.00'),
+            target_attendees=500
+        )
+        
+        social = SocialMediaAd.objects.create(
+            campaign=self.campaign,
+            name='FB Ads'
+        )
+        SocialMediaPlatformLine.objects.create(
+            social_ad=social,
+            platform='facebook',
+            budget=Decimal('600.00'),
+            target_value=1000
+        )
+        
+        # Calculate total campaign budget: 1000 + 600 = 1600
+        CampaignBudgetService.refresh_total(self.campaign)
+        self.assertEqual(self.campaign.total_budget, Decimal('1600.00'))
+        
+        # Setup attribution
+        from apps.leads.models import LeadSource
+        source = LeadSource.objects.create(company=self.company, name='Facebook ad')
+        lead = Lead.objects.create(
+            company=self.company,
+            full_name='Lead One',
+            phone_number='123456789',
+            normalized_phone='123456789',
+            source=source
+        )
+        LeadCampaignAttribution.objects.create(
+            lead=lead,
+            campaign=self.campaign,
+            campaign_type='social_media',
+            platform='facebook'
+        )
+        
+        # Recalculate KPIs
+        res = ROIService.recalculate_all_kpis(self.campaign)
+        self.assertEqual(res['lead_count'], 1)
+        self.assertEqual(res['cpl'], Decimal('1600.00'))
+        self.assertEqual(res['total_attendees'], 500)
+        self.assertEqual(res['cpa'], Decimal('3.20'))
+        self.assertEqual(res['platform_metrics']['facebook']['leads'], 1)
+        self.assertEqual(res['platform_metrics']['facebook']['cpl'], Decimal('600.00'))
+        
+        # Verify database records
+        leads_kpi = CampaignKPIResult.objects.get(campaign=self.campaign, metric_code='leads')
+        self.assertEqual(leads_kpi.metric_value, Decimal('1.00'))
+        
+        cpl_kpi = CampaignKPIResult.objects.get(campaign=self.campaign, metric_code='cost_per_lead')
+        self.assertEqual(cpl_kpi.metric_value, Decimal('1600.00'))
+        
+        attendees_kpi = CampaignKPIResult.objects.get(campaign=self.campaign, metric_code='attendees')
+        self.assertEqual(attendees_kpi.metric_value, Decimal('500.00'))
+        
+        cpa_kpi = CampaignKPIResult.objects.get(campaign=self.campaign, metric_code='cost_per_attendee')
+        self.assertEqual(cpa_kpi.metric_value, Decimal('3.20'))
+        
+        fb_leads_kpi = CampaignKPIResult.objects.get(campaign=self.campaign, metric_code='platform_facebook_leads')
+        self.assertEqual(fb_leads_kpi.metric_value, Decimal('1.00'))
+        
+        fb_cpl_kpi = CampaignKPIResult.objects.get(campaign=self.campaign, metric_code='platform_facebook_cpl')
+        self.assertEqual(fb_cpl_kpi.metric_value, Decimal('600.00'))
+

@@ -26,13 +26,9 @@ class DistributionStrategy:
         raise NotImplementedError
 
     def eligible_sales_profiles(self, *, lead, team=None, language=None):
-        qs = SalesProfile.objects.select_related('user').filter(company=lead.company, is_available=True, user__is_active=True)
-        if team:
-            qs = qs.filter(user__team_memberships__team=team, user__team_memberships__is_active=True)
+        from apps.distribution.selectors import get_eligible_sales_profiles
         language = language or lead.language
-        if language:
-            qs = qs.filter(languages=language)
-        return qs.distinct()
+        return get_eligible_sales_profiles(lead.company, team=team, language=language)
 
     def persist_assignment(self, *, lead, result: AssignmentResult, actor=None):
         LeadAssignment.objects.filter(lead=lead, is_current=True).update(is_current=False)
@@ -70,9 +66,8 @@ class RoundRobinLoadBalancedStrategy(DistributionStrategy):
     def assign(self, *, lead, actor=None, scope_mode='all_salesmen', team=None, language=None, **kwargs):
         selected_team = team
         if scope_mode in ('team_then_salesman', 'team_then_sales_head') and selected_team is None:
-            selected_team = Team.objects.filter(company=lead.company, is_active=True).annotate(
-                active_leads=Count('current_leads')
-            ).order_by('active_leads', 'sort_order', 'name').first()
+            from apps.distribution.selectors import get_least_busy_team
+            selected_team = get_least_busy_team(lead.company)
         if scope_mode == 'team_then_sales_head':
             result = AssignmentResult(lead=lead, team=selected_team, salesman=None, strategy_code=self.code, reason='Assigned to team; Sales Head decides.')
             self.persist_assignment(lead=lead, result=result, actor=actor)
@@ -94,16 +89,11 @@ class ByTurnSequentialStrategy(DistributionStrategy):
     def assign(self, *, lead, actor=None, scope_mode='all_salesmen', team=None, language=None, **kwargs):
         selected_team = team
         if scope_mode in ('team_then_salesman', 'team_then_sales_head') and selected_team is None:
-            teams = list(Team.objects.filter(company=lead.company, is_active=True).order_by('sort_order', 'name'))
+            from apps.distribution.selectors import get_active_teams, get_rotation_pointer_for_update
+            teams = list(get_active_teams(lead.company))
             if not teams:
                 raise ValueError('No active teams available.')
-            pointer, _ = RotationPointer.objects.select_for_update().get_or_create(
-                company=lead.company,
-                strategy_code=self.code,
-                scope_mode='teams',
-                team=None,
-                defaults={'position': 0},
-            )
+            pointer = get_rotation_pointer_for_update(lead.company, self.code, 'teams')
             selected_team = teams[pointer.position % len(teams)]
             pointer.position = (pointer.position + 1) % len(teams)
             pointer.last_team = selected_team
@@ -115,13 +105,8 @@ class ByTurnSequentialStrategy(DistributionStrategy):
         candidates = list(self.eligible_sales_profiles(lead=lead, team=selected_team, language=language).order_by('user__email'))
         if not candidates:
             raise ValueError('No eligible salesman found for sequential distribution.')
-        pointer, _ = RotationPointer.objects.select_for_update().get_or_create(
-            company=lead.company,
-            strategy_code=self.code,
-            scope_mode=scope_mode,
-            team=selected_team,
-            defaults={'position': 0},
-        )
+        from apps.distribution.selectors import get_rotation_pointer_for_update
+        pointer = get_rotation_pointer_for_update(lead.company, self.code, scope_mode, team=selected_team)
         profile = candidates[pointer.position % len(candidates)]
         pointer.position = (pointer.position + 1) % len(candidates)
         pointer.last_user = profile.user
@@ -148,30 +133,27 @@ class RetryTeamEscalationStrategy(ByTurnSequentialStrategy):
     @transaction.atomic
     def assign(self, *, lead, actor=None, scope_mode='team_then_salesman', team=None, language=None, **kwargs):
         from apps.core.services.policies import PolicyResolver
+        from apps.distribution.selectors import get_last_assignment_attempt
         n = int(PolicyResolver.get(lead.company, 'retry_attempts_per_team', default=3))
         
-        last_attempt = lead.assignment_attempts.order_by('-attempt_no').first()
+        last_attempt = get_last_assignment_attempt(lead)
         
         # Scenario 1: Initial assignment (no previous attempts)
         if not last_attempt:
             selected_team = team
             if scope_mode in ('team_then_salesman', 'team_then_sales_head') and selected_team is None:
-                teams = list(Team.objects.filter(company=lead.company, is_active=True).order_by('sort_order', 'name'))
+                from apps.distribution.selectors import get_active_teams, get_rotation_pointer_for_update
+                teams = list(get_active_teams(lead.company))
                 if not teams:
                     raise ValueError('No active teams available for distribution.')
-                pointer, _ = RotationPointer.objects.select_for_update().get_or_create(
-                    company=lead.company,
-                    strategy_code=self.code,
-                    scope_mode='teams',
-                    team=None,
-                    defaults={'position': 0},
-                )
+                pointer = get_rotation_pointer_for_update(lead.company, self.code, 'teams')
                 selected_team = teams[pointer.position % len(teams)]
                 pointer.position = (pointer.position + 1) % len(teams)
                 pointer.last_team = selected_team
                 pointer.save(update_fields=['position', 'last_team', 'updated_at'])
             else:
-                selected_team = selected_team or Team.objects.filter(company=lead.company, is_active=True).first()
+                from apps.distribution.selectors import get_active_teams
+                selected_team = selected_team or get_active_teams(lead.company).first()
             
             # Select the first salesman sequentially in the selected team
             candidates = list(self.eligible_sales_profiles(lead=lead, team=selected_team, language=language).order_by('user__email'))
@@ -243,18 +225,13 @@ class RetryTeamEscalationStrategy(ByTurnSequentialStrategy):
                     return result
             
             # Scenario 3: Attempts exceeded or no salesman available, escalate to next team
-            teams = list(Team.objects.filter(company=lead.company, is_active=True).order_by('sort_order', 'name'))
+            from apps.distribution.selectors import get_active_teams, get_rotation_pointer_for_update
+            teams = list(get_active_teams(lead.company))
             if not teams:
                 raise ValueError('No active teams available for escalation.')
                 
             # Rotate to next team sequentially
-            pointer, _ = RotationPointer.objects.select_for_update().get_or_create(
-                company=lead.company,
-                strategy_code=self.code,
-                scope_mode='teams',
-                team=None,
-                defaults={'position': 0},
-            )
+            pointer = get_rotation_pointer_for_update(lead.company, self.code, 'teams')
             next_team_idx = 0
             for idx, t in enumerate(teams):
                 if t == last_attempt.team:
@@ -316,13 +293,11 @@ class WalkInTeamTurnStrategy(DistributionStrategy):
 
     @transaction.atomic
     def assign(self, *, lead, actor=None, scope_mode='team_then_sales_head', team=None, language=None, salesman=None, **kwargs):
-        teams = list(Team.objects.filter(company=lead.company, is_active=True).order_by('sort_order', 'name'))
+        from apps.distribution.selectors import get_active_teams, get_rotation_pointer_for_update
+        teams = list(get_active_teams(lead.company))
         if not teams:
             raise ValueError('No active teams available for walk-in team turn.')
-        pointer, _ = RotationPointer.objects.select_for_update().get_or_create(
-            company=lead.company, strategy_code=self.code, scope_mode='walkin_teams', team=None,
-            defaults={'position': 0},
-        )
+        pointer = get_rotation_pointer_for_update(lead.company, self.code, 'walkin_teams')
         attempts = 0
         selected_team = None
         while attempts < len(teams):
@@ -356,10 +331,8 @@ class WalkInFullRotationStrategy(DistributionStrategy):
         candidates = list(self.eligible_sales_profiles(lead=lead, team=None, language=language).order_by('user__email'))
         if not candidates:
             raise ValueError('No eligible salesman found for walk-in full rotation.')
-        pointer, _ = RotationPointer.objects.select_for_update().get_or_create(
-            company=lead.company, strategy_code=self.code, scope_mode='walkin_all', team=None,
-            defaults={'position': 0},
-        )
+        from apps.distribution.selectors import get_rotation_pointer_for_update
+        pointer = get_rotation_pointer_for_update(lead.company, self.code, 'walkin_all')
         attempts = 0
         profile = None
         while attempts < len(candidates):

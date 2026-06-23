@@ -12,3 +12,14 @@ def update_campaign_lifecycles_task():
         if old_status != new_status:
             count += 1
     return count
+
+
+@shared_task(name='apps.marketing.tasks.recalculate_campaign_metrics')
+def recalculate_campaign_metrics():
+    from apps.marketing.services.roi_service import ROIService
+    campaigns = Campaign.objects.filter(is_archived=False, lifecycle_status_cache='active')
+    count = 0
+    for campaign in campaigns:
+        ROIService.recalculate_all_kpis(campaign)
+        count += 1
+    return count

@@ -235,14 +235,8 @@ class LeadService:
 
         if mode == 'retain' and existing_phone:
             # Look up previous salesman for this phone number
-            previous_lead = (
-                Lead.objects
-                .filter(company=lead.company, normalized_phone=normalize_phone('+20', existing_phone))
-                .exclude(pk=lead.pk)
-                .order_by('-created_at')
-                .select_related('current_salesman')
-                .first()
-            )
+            from apps.leads.selectors import get_duplicate_lead_for_existing_client
+            previous_lead = get_duplicate_lead_for_existing_client(lead.company, existing_phone, exclude_lead_id=lead.pk)
             if previous_lead and previous_lead.current_salesman:
                 previous_salesman = previous_lead.current_salesman
                 if previous_salesman.is_active:

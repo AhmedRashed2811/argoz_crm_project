@@ -107,17 +107,21 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_ACKS_LATE = True
 CELERY_TASK_TRACK_STARTED = True
 CELERY_BEAT_SCHEDULE = {
-    'process-expired-slas-every-minute': {
-        'task': 'apps.sla.tasks.process_expired_slas_task',
+    'check_sla_expiry': {
+        'task': 'apps.sla.tasks.check_sla_expiry',
+        'schedule': 120.0,
+    },
+    'send_due_reminders': {
+        'task': 'apps.notifications.tasks.send_due_reminders',
+        'schedule': 300.0,
+    },
+    'send_email_outbox': {
+        'task': 'apps.notifications.tasks.send_email_outbox',
         'schedule': 60.0,
     },
-    'send-due-reminders-every-minute': {
-        'task': 'apps.notifications.tasks.send_due_reminders_task',
-        'schedule': 60.0,
-    },
-    'deliver-email-outbox-every-minute': {
-        'task': 'apps.notifications.tasks.deliver_email_outbox_task',
-        'schedule': 60.0,
+    'recalculate_campaign_metrics': {
+        'task': 'apps.marketing.tasks.recalculate_campaign_metrics',
+        'schedule': 3600.0,
     },
     'update-campaign-lifecycles-every-hour': {
         'task': 'apps.marketing.tasks.update_campaign_lifecycles_task',
