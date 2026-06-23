@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block page_title %}Audit Detail{% endblock %}{% block content %}<div class="card"><h2>{{ object.action }}</h2><p>{{ object.object_repr }}</p><pre>{{ object.before }}</pre><pre>{{ object.after }}</pre></div>{% endblock %}

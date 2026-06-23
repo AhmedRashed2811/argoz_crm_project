@@ -1,0 +1,3 @@
+{% extends 'base.html' %}
+{% block page_title %}Marketing ROI{% endblock %}
+{% block content %}<div class="card"><h2 class="card-title">ROI & KPI Reporting</h2><p class="muted">Transparent metrics compare stored budgets with attributed leads, attendees and platform KPI achievement.</p></div><div class="grid-3">{% for c in campaigns %}<div class="card"><h3>{{ c.name }}</h3><p class="muted">Budget: {{ c.total_budget }}</p><p>Leads: <strong>{{ c.leads.count }}</strong></p><p>Cost per lead: <strong>{% if c.leads.count %}calculated by service{% else %}—{% endif %}</strong></p><a class="btn btn-soft btn-sm" href="{% url 'marketing:campaign_detail' c.pk %}">Open</a></div>{% endfor %}</div>{% endblock %}

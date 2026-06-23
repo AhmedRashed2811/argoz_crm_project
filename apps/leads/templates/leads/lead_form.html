@@ -1,0 +1,53 @@
+{% extends 'base.html' %}
+{% block page_title %}Create Lead{% endblock %}
+{% block content %}
+<form method="post" data-confirm="Create and route this lead?" data-confirm-text="Distribution will follow the source and company policy selected in the form.">
+{% csrf_token %}
+<div class="stepper"><div class="step active"><span class="step-num">1</span>Lead Identity</div><div class="step active"><span class="step-num">2</span>Source-Specific Data</div><div class="step active"><span class="step-num">3</span>Distribution</div></div>
+<div class="grid-2">
+  <div>
+    <div class="card"><div class="card-header"><div><h2 class="card-title">Lead Information</h2><div class="card-subtitle">Name and phone are required. Phone is normalized in the backend.</div></div></div><div class="form-grid"><div class="field"><label>Company</label><select name="company">{% for c in companies %}<option value="{{ c.pk }}" {% if user.company_id == c.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select></div><div class="field"><label class="required">Lead Name</label><input name="full_name" required placeholder="Client full name"></div><div class="field"><label>Country Code</label><input name="phone_country_code" value="+20" required></div><div class="field"><label class="required">Phone Number</label><input name="phone_number" required placeholder="01000000000"></div><div class="field"><label>Email</label><input type="email" name="email"></div><div class="field"><label>Origin</label><select name="origin"><option value="direct">Direct</option><option value="broker">Broker / Indirect</option></select></div><div class="field"><label>Language</label><select name="language"><option value="">Default Arabic</option>{% for l in languages %}<option value="{{ l.pk }}">{{ l.name }}</option>{% endfor %}</select></div></div></div>
+    <div class="card"><div class="card-header"><div><h2 class="card-title">Lead Source</h2><div class="card-subtitle">The selected source controls the visible fields and distribution choices.</div></div></div><div class="grid-2">{% for s in sources %}<label class="type-card" data-source-card><input type="radio" name="source" value="{{ s.pk }}" data-source-code="{{ s.code }}" required><div class="type-card-title">{{ s.name }}</div><div class="type-card-sub">{{ s.code }}</div></label>{% endfor %}</div><div class="alert info" style="margin-top:14px" id="source-help">Select a source to display its required business fields.</div></div>
+  </div>
+  <div>
+    <div class="card sticky-summary"><h2 class="card-title">Routing Rule Preview</h2><p class="muted" id="routing-preview">No source selected yet.</p><div class="divider"></div><div class="alert warning"><strong>Reminder:</strong> automatic assignment applies language pre-check and strategy/scope from company policy. Manual assignment is only available to authorized users.</div></div>
+  </div>
+</div>
+
+<div class="section-panel" data-source-section="campaign" style="display:none"><h3>Campaign Attribution</h3><div class="form-grid"><div class="field"><label>Campaign</label><select name="campaign" id="campaign-select"><option value="">Select campaign</option>{% for c in campaigns %}<option value="{{ c.pk }}">{{ c.name }}</option>{% endfor %}</select></div><div class="field"><label>Campaign Child Record</label><select name="campaign_child_id" id="campaign-child-select"><option value="">Select event / social / exhibition</option></select><input type="hidden" name="campaign_child_type" id="campaign-child-type"></div></div></div>
+<div class="section-panel" data-source-section="broker" style="display:none"><h3>Broker Details</h3><div class="form-grid"><div class="field"><label>Broker</label><select name="broker"><option value="">Select broker</option>{% for b in brokers %}<option value="{{ b.pk }}">{{ b }}</option>{% endfor %}</select></div><div class="field"><label>Broker Assignment Policy</label><select name="broker_assign_mode"><option value="broker_only">Remain with broker only</option><option value="broker_and_sales">Also assign to company salesman</option></select></div></div></div>
+<div class="section-panel" data-source-section="how_did_you_know" style="display:none"><h3>How Did You Know Us?</h3><div class="form-grid"><div class="field"><label>Source Awareness Option</label><select name="how_did_you_know"><option value="">Select option</option>{% for h in how_options %}<option value="{{ h.pk }}">{{ h.name }}</option>{% endfor %}</select></div><div class="field"><label>Reception / Call Center Note</label><input name="awareness_note" placeholder="Optional note"></div></div></div>
+<div class="section-panel" data-source-section="exhibition" style="display:none"><h3>Exhibition Reference</h3><div class="alert info">Exhibition source is manual only and a salesman must be selected.</div></div>
+<div class="section-panel" data-source-section="referrer_name" style="display:none"><h3>Referral</h3><div class="field"><label>Referrer Name</label><input name="referrer_name" placeholder="Who referred this lead?"></div></div>
+<div class="section-panel" data-source-section="existing_client_phone" style="display:none"><h3>Existing Client Lookup</h3><div class="field"><label>Existing Client Phone</label><input name="existing_client_phone" placeholder="Search previous client phone"></div></div>
+<div class="section-panel" data-source-section="self_owner_mode" style="display:none"><h3>Self-Generated Ownership</h3><div class="field"><label>Ownership Mode</label><select name="self_owner_mode"><option value="keep_permanent">Keep permanently with creator</option><option value="redistribute_after_sla">Redistribute if no contact within SLA</option></select></div></div>
+<div class="section-panel" data-source-section="walkin_policy" style="display:none"><h3>Walk-in Reception Policy</h3><div class="grid-3"><div class="check-row"><strong>Open Floor</strong><br><span class="small muted">Any available salesman may meet visitor.</span></div><div class="check-row"><strong>Team Turn</strong><br><span class="small muted">Team rotation; sales head assigns.</span></div><div class="check-row"><strong>Full Rotation</strong><br><span class="small muted">All salesmen rotate company-wide.</span></div></div></div>
+
+<div class="section-panel" data-source-section="distribution" style="display:none"><h3>Distribution Decision</h3><div class="grid-3"><label class="check-row"><input type="radio" name="distribution_mode" value="automatic" checked> Automatic per policy</label><label class="check-row"><input type="radio" name="distribution_mode" value="manual"> Manual assignment</label><label class="check-row"><input type="radio" name="distribution_mode" value="none"> No immediate assignment</label></div><div class="form-grid" style="margin-top:14px"><div class="field"><label>Automatic Strategy Override</label><select name="strategy_code"><option value="">Company default</option><option value="round_robin_load_balanced">Round Robin Load Balanced</option><option value="by_turn">By Turn Sequential</option><option value="retry_team_escalation">Retry Attempts & Team Escalation</option></select></div></div></div>
+<div class="section-panel" data-source-section="manual_assignment" style="display:none"><h3>Manual Assignment</h3><div class="form-grid"><div class="field"><label>Team</label><select name="manual_team"><option value="">Select team</option>{% for t in teams %}<option value="{{ t.pk }}">{{ t.name }}</option>{% endfor %}</select></div><div class="field"><label>Salesman</label><select name="manual_salesman"><option value="">Select salesman</option>{% for s in salesmen %}<option value="{{ s.pk }}">{{ s.get_full_name|default:s.email }}</option>{% endfor %}</select></div></div></div>
+
+<div class="toolbar"><a class="btn btn-soft" href="{% url 'leads:list' %}">Cancel</a><button class="btn btn-primary" type="submit"><i class="bi bi-check-circle"></i>Create Lead</button></div>
+</form>
+{% endblock %}
+{% block extra_js %}
+<script>
+const sourceRulesUrl = "{% url 'leads:ajax_source_rules' %}";
+const campaignChildrenUrl = "{% url 'leads:ajax_campaign_children' %}";
+async function applySourceRule(sourceId, card){
+  document.querySelectorAll('[data-source-card]').forEach(c=>c.classList.remove('selected')); card?.classList.add('selected');
+  const data = await crmFetch(sourceRulesUrl + '?source_id=' + sourceId);
+  document.getElementById('source-help').innerHTML = `<strong>${data.title}</strong><br>${data.distribution}`;
+  document.getElementById('routing-preview').innerText = data.distribution;
+  document.querySelectorAll('[data-source-section]').forEach(sec=>sec.style.display='none');
+  (data.show || []).forEach(name=>document.querySelector(`[data-source-section="${name}"]`)?.style.setProperty('display','block'));
+}
+document.querySelectorAll('input[name="source"]').forEach(r=>r.addEventListener('change', e=>applySourceRule(e.target.value, e.target.closest('[data-source-card]'))));
+document.getElementById('campaign-select')?.addEventListener('change', async function(){
+  const select = document.getElementById('campaign-child-select'); select.innerHTML='<option value="">Loading...</option>';
+  if(!this.value){select.innerHTML='<option value="">Select event / social / exhibition</option>';return;}
+  const data = await crmFetch(campaignChildrenUrl + '?campaign_id=' + this.value);
+  select.innerHTML='<option value="">Select event / social / exhibition</option>' + data.children.map(x=>`<option data-type="${x.type}" value="${x.id}">${x.label}</option>`).join('');
+});
+document.getElementById('campaign-child-select')?.addEventListener('change', function(){const opt=this.selectedOptions[0];document.getElementById('campaign-child-type').value = opt?.dataset.type || '';});
+</script>
+{% endblock %}

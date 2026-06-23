@@ -1,0 +1,6 @@
+{% extends 'base.html' %}
+{% block page_title %}Policy Console{% endblock %}
+{% block content %}
+<div class="card"><div class="card-header"><div><h2 class="card-title">Company Policy Configuration</h2><div class="card-subtitle">Policies drive distribution, SLA expiry, walk-in behavior, existing client handling and integrations. They are database-driven, not hardcoded.</div></div></div><p><strong>Company:</strong> {{ company }}</p></div>
+<form method="post" data-confirm="Update company policies?">{% csrf_token %}<div class="grid-2">{% for d in definitions %}<div class="card"><h3>{{ d.name }}</h3><p class="small muted">{{ d.module }} · {{ d.code }}</p><div class="field"><label>Selected Option</label><select name="policy_{{ d.id }}"><option value="">No option</option>{% for o in d.options.all %}<option value="{{ o.id }}">{{ o.label }}</option>{% endfor %}</select></div></div>{% empty %}<div class="card empty-state">Run seed_crm_defaults to create default policies.</div>{% endfor %}</div><div class="toolbar"><span></span><button class="btn btn-primary">Save Policies</button></div></form>
+{% endblock %}

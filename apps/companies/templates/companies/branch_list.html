@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block page_title %}Branches{% endblock %}{% block content %}<div class="card"><h2 class="card-title">Branches</h2></div><div class="grid-3">{% for b in object_list %}<div class="card"><h3>{{ b.name }}</h3><p>{{ b.company }}</p><p class="muted">{{ b.city }} · {{ b.phone }}</p></div>{% endfor %}</div>{% endblock %}

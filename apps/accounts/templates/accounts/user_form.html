@@ -1,0 +1,89 @@
+{% extends 'base.html' %}
+{% block page_title %}{% if mode == 'edit' %}Edit User Permissions{% else %}Create User{% endif %}{% endblock %}
+{% block content %}
+<form method="post" class="user-form" data-confirm="Save this user?" data-confirm-text="Groups are templates only; direct permissions will be saved as the final effective access." enctype="multipart/form-data">
+  {% csrf_token %}
+  <div class="stepper">
+    <div class="step active"><span class="step-num">1</span>Identity</div>
+    <div class="step active"><span class="step-num">2</span>Primary Group Template</div>
+    <div class="step active"><span class="step-num">3</span>Cross-Module Permissions</div>
+  </div>
+  <div class="grid-2">
+    <div>
+      <div class="card">
+        <div class="card-header"><div><h2 class="card-title">User Identity</h2><div class="card-subtitle">Basic login and company assignment.</div></div></div>
+        {% if form.non_field_errors %}<div class="alert danger">{{ form.non_field_errors }}</div>{% endif %}
+        <div class="form-grid">
+          <div class="field"><label class="required">Company</label>{{ form.company }}</div>
+          <div class="field"><label class="required">Email</label>{{ form.email }}</div>
+          <div class="field"><label>Username</label>{{ form.username }}</div>
+          <div class="field"><label>Phone</label>{{ form.phone }}</div>
+          <div class="field"><label>First Name</label>{{ form.first_name }}</div>
+          <div class="field"><label>Last Name</label>{{ form.last_name }}</div>
+          {% if form.password1 %}<div class="field"><label class="required">Password</label>{{ form.password1 }}</div><div class="field"><label class="required">Confirm Password</label>{{ form.password2 }}</div>{% endif %}
+        </div>
+        <div class="divider"></div>
+        <label class="check-row"><input type="checkbox" name="is_active" {% if form.is_active.value %}checked{% endif %}> Active user</label>
+        <label class="check-row"><input type="checkbox" name="is_staff" {% if form.is_staff.value %}checked{% endif %}> Staff/admin area access</label>
+      </div>
+      <div class="card sticky-summary">
+        <div class="card-header"><div><h2 class="card-title">Selected Role Permission Preview</h2><div class="card-subtitle">This updates asynchronously when role templates are selected.</div></div></div>
+        <div class="preview-box"><div id="permission-preview"><span class="muted">Select one or more groups to preview inherited permissions.</span></div></div>
+      </div>
+    </div>
+    <div>
+      <div class="card">
+        <div class="card-header"><div><h2 class="card-title">Primary Group Template</h2><div class="card-subtitle">A user can be Sales Head and still receive Marketing permissions. Nothing is hardcoded by group name.</div></div></div>
+        <div class="grid-2">
+          {% for item in role_cards %}
+          <label class="type-card {% if item.group.id|stringformat:'s' in selected_group_ids %}selected{% endif %}">
+            <input class="group-checkbox" type="checkbox" name="groups" value="{{ item.group.id }}" {% if item.group.id|stringformat:'s' in selected_group_ids %}checked{% endif %}>
+            <div class="type-card-title">{{ item.group.name }}</div>
+            <div class="type-card-sub">{{ item.help }}</div>
+            <span class="badge dark">{{ item.count }} permissions</span>
+          </label>
+          {% endfor %}
+        </div>
+        <input type="hidden" name="primary_group" id="primary_group_id" value="">
+      </div>
+      <div class="card">
+        <div class="card-header"><div><h2 class="card-title">Direct User Permissions</h2><div class="card-subtitle">Add or remove access from any module regardless of selected role group.</div></div><button class="btn btn-soft btn-sm" type="button" id="selectInherited">Select inherited preview</button></div>
+        {% for app, data in permissions_by_app.items %}
+        <details class="permission-module" {% if app == 'leads' or app == 'marketing' or app == 'finance' %}open{% endif %}>
+          <summary>{{ data.label }} <span class="badge">{{ data.perms|length }}</span></summary>
+          <div class="permission-grid">
+            {% for perm in data.perms %}
+            <label class="check-row"><input class="permission-checkbox" type="checkbox" name="user_permissions" value="{{ perm.id }}" data-code="{{ perm.content_type.app_label }}.{{ perm.codename }}" {% if perm.id|stringformat:'s' in selected_permission_ids %}checked{% endif %}><span><strong>{{ perm.codename }}</strong><br><span class="small muted">{{ perm.name }}</span></span></label>
+            {% endfor %}
+          </div>
+        </details>
+        {% endfor %}
+      </div>
+      <div class="toolbar"><a class="btn btn-soft" href="{% url 'accounts:user_list' %}">Cancel</a><button class="btn btn-primary" type="submit"><i class="bi bi-check-circle"></i>Save User</button></div>
+    </div>
+  </div>
+</form>
+{% endblock %}
+{% block extra_js %}
+<script>
+const groupUrl = "{% url 'accounts:ajax_group_permissions' %}";
+async function refreshPermissionPreview(){
+  const selected = [...document.querySelectorAll('.group-checkbox:checked')].map(x=>x.value);
+  document.querySelectorAll('.type-card').forEach(card=>card.classList.toggle('selected', card.querySelector('input')?.checked));
+  if(selected.length){document.getElementById('primary_group_id').value = selected[0];}
+  const preview = document.getElementById('permission-preview');
+  if(!selected.length){preview.innerHTML='<span class="muted">Select one or more groups to preview inherited permissions.</span>'; return;}
+  const data = await crmFetch(groupUrl + '?' + selected.map(x=>'groups[]='+encodeURIComponent(x)).join('&'));
+  preview.dataset.permissionIds = data.permissions.map(p=>p.id).join(',');
+  preview.innerHTML = `<div class="badge success">${data.count} inherited permissions</div><div class="divider"></div>` + data.permissions.map(p=>`<div><code>${p.code}</code></div>`).join('');
+}
+document.querySelectorAll('.group-checkbox').forEach(x=>x.addEventListener('change', refreshPermissionPreview));
+document.getElementById('selectInherited')?.addEventListener('click', async function(){
+  await refreshPermissionPreview();
+  const ids = (document.getElementById('permission-preview').dataset.permissionIds || '').split(',').filter(Boolean);
+  document.querySelectorAll('.permission-checkbox').forEach(cb=>{ if(ids.includes(cb.value)) cb.checked = true; });
+  crmToast('Inherited group permissions selected. You can still remove or add custom permissions.', 'success');
+});
+refreshPermissionPreview();
+</script>
+{% endblock %}

@@ -1,0 +1,3 @@
+{% extends 'base.html' %}
+{% block page_title %}Teams{% endblock %}
+{% block content %}<div class="actions card"><a class="btn" href="{% url 'accounts:team_create' %}">Create Team</a></div><div class="card"><table><tr><th>Name</th><th>Company</th><th>Head</th><th>Active</th></tr>{% for obj in object_list %}<tr><td>{{ obj.name }}</td><td>{{ obj.company }}</td><td>{{ obj.sales_head }}</td><td>{{ obj.is_active }}</td></tr>{% empty %}<tr><td colspan="4" class="empty">No teams yet.</td></tr>{% endfor %}</table></div>{% endblock %}

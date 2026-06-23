@@ -1,0 +1,64 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ crm_product_name|default:'Argoz CRM' }}{% endblock %}</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'css/crm.css' %}">
+  {% block extra_css %}{% endblock %}
+</head>
+<body>
+{% if messages %}
+  {% for message in messages %}<div hidden data-swal-message="{{ message|escapejs }}" data-swal-icon="{{ message.tags|default:'success' }}"></div>{% endfor %}
+{% endif %}
+<div class="shell">
+  {% if user.is_authenticated %}
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">A</div>
+      <div><div class="brand-title">Argoz CRM</div><div class="brand-sub">Real Estate SaaS Platform</div></div>
+    </div>
+    <div class="nav-section">Workspace</div>
+    <a class="nav-link" href="{% url 'dashboard' %}"><i class="bi bi-speedometer2"></i>Dashboard</a>
+    <a class="nav-link" href="{% url 'leads:list' %}"><i class="bi bi-person-lines-fill"></i>Leads</a>
+    <a class="nav-link" href="{% url 'leads:create' %}"><i class="bi bi-plus-circle"></i>Create Lead</a>
+    <a class="nav-link" href="{% url 'marketing:campaign_list' %}"><i class="bi bi-megaphone"></i>Marketing</a>
+    <a class="nav-link" href="{% url 'marketing:campaign_create' %}"><i class="bi bi-magic"></i>Campaign Builder</a>
+    <a class="nav-link" href="{% url 'marketing:approval_queue' %}"><i class="bi bi-bank"></i>Finance Approval</a>
+    <div class="nav-section">Operations</div>
+    <a class="nav-link" href="{% url 'accounts:user_list' %}"><i class="bi bi-people"></i>Users & Permissions</a>
+    <a class="nav-link" href="{% url 'permissions_engine:matrix' %}"><i class="bi bi-shield-lock"></i>Permission Matrix</a>
+    <a class="nav-link" href="{% url 'companies:policy_console' %}"><i class="bi bi-sliders"></i>Policy Console</a>
+    <a class="nav-link" href="{% url 'sla:dashboard' %}"><i class="bi bi-alarm"></i>SLA Monitor</a>
+    <a class="nav-link" href="{% url 'integrations:list' %}"><i class="bi bi-diagram-3"></i>Integrations</a>
+    <a class="nav-link" href="{% url 'notifications:list' %}"><i class="bi bi-bell"></i>Notifications</a>
+    <div class="nav-section">Control</div>
+    <a class="nav-link" href="{% url 'audit:list' %}"><i class="bi bi-activity"></i>Audit Logs</a>
+    <a class="nav-link" href="{% url 'reports:executive' %}"><i class="bi bi-bar-chart"></i>Reports</a>
+    <a class="nav-link" href="{% url 'accounts:logout' %}" data-confirm="Log out?" data-confirm-text="You will return to the login screen."><i class="bi bi-box-arrow-right"></i>Logout</a>
+  </aside>
+  {% endif %}
+  <main class="content">
+    <div class="topbar">
+      <div class="btn-row">
+        <button class="btn btn-soft mobile-menu" data-mobile-menu type="button"><i class="bi bi-list"></i></button>
+        <div>
+          <div class="breadcrumbs">{% block breadcrumbs %}{{ active_company|default:'Platform' }}{% endblock %}</div>
+          <h1>{% block page_title %}{{ page_title|default:'CRM' }}{% endblock %}</h1>
+        </div>
+      </div>
+      {% if user.is_authenticated %}
+      <div class="user-pill"><div class="avatar">{{ user.email|slice:':1'|upper }}</div><div><strong>{{ user.get_full_name|default:user.email }}</strong><div class="small muted">{{ user.company|default:'No company selected' }}</div></div></div>
+      {% endif %}
+    </div>
+    {% block content %}{% endblock %}
+  </main>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+<script src="{% static 'js/crm_ui.js' %}"></script>
+{% block extra_js %}{% endblock %}
+</body>
+</html>

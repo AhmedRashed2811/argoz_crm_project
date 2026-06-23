@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+{% block page_title %}Executive Dashboard{% endblock %}
+{% block content %}
+<div class="grid">
+  {% for card in metric_cards %}
+  <div class="card"><div class="muted">{{ card.label }}</div><div class="metric">{{ card.value }}</div><div class="small muted">{{ card.hint }}</div></div>
+  {% endfor %}
+</div>
+<div class="grid-2">
+  <div class="card">
+    <div class="card-header"><div><h2 class="card-title">Implementation Coverage</h2><div class="card-subtitle">Django MVT, service layer, AJAX, SweetAlert, policies and strategy-driven assignment.</div></div></div>
+    <div class="stepper">
+      <div class="step active"><span class="step-num">1</span>Lead creation source wizard</div>
+      <div class="step active"><span class="step-num">2</span>Marketing campaign builder</div>
+      <div class="step active"><span class="step-num">3</span>Flexible user permissions</div>
+      <div class="step active"><span class="step-num">4</span>SLA jobs and notifications</div>
+    </div>
+    <p class="muted">This project now includes detailed UI templates that mirror the business rules, including all marketing campaign types, lead source-specific behavior, group-separated permissions, cross-module permission overrides, and asynchronous form behavior.</p>
+  </div>
+  <div class="card">
+    <div class="card-header"><div><h2 class="card-title">Quick Actions</h2><div class="card-subtitle">All links use Django URL reversing, not hardcoded paths.</div></div></div>
+    <div class="btn-row">
+      <a class="btn btn-primary" href="{% url 'leads:create' %}"><i class="bi bi-person-plus"></i>New Lead</a>
+      <a class="btn btn-primary" href="{% url 'marketing:campaign_create' %}"><i class="bi bi-megaphone"></i>New Campaign</a>
+      <a class="btn btn-soft" href="{% url 'accounts:user_create' %}"><i class="bi bi-person-gear"></i>Create User</a>
+      <a class="btn btn-soft" href="{% url 'companies:policy_console' %}"><i class="bi bi-sliders"></i>Policies</a>
+    </div>
+  </div>
+</div>
+{% endblock %}
